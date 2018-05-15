@@ -15,7 +15,7 @@ libdmda_repart.a: dmda_repart.o
 	$(RANLIB) $@
 
 example: example.o libdmda_repart.a
-	$(CLINKER) -o $@ $? $(PETSC_SNES_LIB) -L. -ldmda_repart
+	$(CLINKER) -o $@ $< $(PETSC_SNES_LIB) -L. -ldmda_repart
 
 NP?=4
 MPI?=mpich
