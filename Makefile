@@ -15,7 +15,7 @@ libdmda_repart.a: dmda_repart.o
 	$(RANLIB) $@
 
 example: example.o libdmda_repart.a
-	$(CLINKER) -o example $? $(PETSC_SNES_LIB) -L. -ldmda_repart
+	$(CLINKER) -o $@ $? $(PETSC_SNES_LIB) -L. -ldmda_repart
 
 NP?=4
 MPI?=mpich
@@ -23,4 +23,4 @@ MPI?=mpich
 run: example
 	mpiexec.${MPI} -n ${NP} ./example
 
-.PHONY: example run
+.PHONY: run
