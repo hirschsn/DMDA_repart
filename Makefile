@@ -1,7 +1,11 @@
 
 all: libdmda_repart.a
 
-PETSC_DIR=~/opt/petsc
+PETSC_DIR = ~/opt/petsc
+
+SRC = example.c dmda_repart.c
+OBJ = $(SRC:.c=.o)
+CLEANFILES = $(OBJ) libdmda_repart.a
 
 include ${PETSC_DIR}/lib/petsc/conf/variables
 include ${PETSC_DIR}/lib/petsc/conf/rules
