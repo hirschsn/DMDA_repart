@@ -111,26 +111,18 @@ GridPartitioningGetOwnerRank(GridPartitioning *p,
 /* Data migration */
 /******************/
 
-// Payload storing the data that is migrated.
-typedef struct {
-  PetscInt i, j, k;
-  // Flexible array member
-  char data[];
-} Payload;
-
 // Data migration state storage
 typedef struct {
   DM ds;         // Swarm DM used for migration
+  PetscInt dof;  // Number of degrees of freedom (block size of "field")
   PetscInt size; // Number of process local data points
 
-  // Use void* here, as Payload* leads to unexpected pointer arithmetic
-  // because of the flexible array member
-  void *payload;       // Data from or for this process
-                       // (depends if DoMigrate has been called)
-  PetscInt payload_bs;
+  PetscReal *field; // Data from or for this process
+                    // (depends if DoMigrate has been called)
+
+  PetscInt *index; // Indices corresponding to the entries in "field"
 
   PetscInt *ranks;     // Target ranks (new owners)
-  PetscInt rank_bs;
 
   GridPartitioning *pnew; // GridPartitioning struct that defines the
                           // new partitioning.
@@ -139,7 +131,7 @@ typedef struct {
 // Initializes a DataMigration struct.
 static PetscErrorCode
 DataMigrationCreate(DataMigration *mig, MPI_Comm comm, PetscInt size,
-                    GridPartitioning *pnew, size_t payload_struct_size)
+                    GridPartitioning *pnew, PetscInt dof)
 {
   PetscErrorCode ierr;
 
@@ -148,19 +140,24 @@ DataMigrationCreate(DataMigration *mig, MPI_Comm comm, PetscInt size,
   ierr = DMSetType(mig->ds, DMSWARM); CHKERRQ(ierr);
 
   ierr = DMSwarmInitializeFieldRegister(mig->ds); CHKERRQ(ierr);
-  ierr = DMSwarmRegisterUserStructField(mig->ds, "field", payload_struct_size);
+  ierr = DMSwarmRegisterPetscDatatypeField(mig->ds, "index", 3, PETSC_INT);
+    CHKERRQ(ierr);
+  ierr = DMSwarmRegisterPetscDatatypeField(mig->ds, "field", dof, PETSC_REAL);
     CHKERRQ(ierr);
   ierr = DMSwarmFinalizeFieldRegister(mig->ds); CHKERRQ(ierr);
 
   mig->size = size;
   ierr = DMSwarmSetLocalSizes(mig->ds, mig->size, 1); CHKERRQ(ierr);
 
-  ierr = DMSwarmGetField(mig->ds, "field", &mig->payload_bs, NULL,
-                         (void**) &mig->payload); CHKERRQ(ierr);
-  ierr = DMSwarmGetField(mig->ds, DMSwarmField_rank, &mig->rank_bs,
+  ierr = DMSwarmGetField(mig->ds, "index", NULL, NULL,
+                         (void**) &mig->index); CHKERRQ(ierr);
+  ierr = DMSwarmGetField(mig->ds, "field", NULL, NULL,
+                         (void**) &mig->field); CHKERRQ(ierr);
+  ierr = DMSwarmGetField(mig->ds, DMSwarmField_rank, NULL,
                          NULL, (void**) &mig->ranks); CHKERRQ(ierr);
 
   mig->pnew = pnew;
+  mig->dof = dof;
 
   PetscFunctionReturn(0);
 }
@@ -170,15 +167,13 @@ static PetscErrorCode DataMigrationDestroy(DataMigration *mig)
   return DMDestroy(&mig->ds);
 }
 
-// Insert a data point at grid cell (i, j, k).
-// Data is of size payload_data_size and the associated payload
-// struct of size payload_struct_size.
-// The payload element is inserted into the DM swarm field
+// Insert a "mig->dof" PetscReals starting at "data".
+// These data are associated to grid cell (i, j, k).
+// and are inserted into the DM swarm field
 // at position insert_index.
 static PetscErrorCode
 DataMigrationInsert(DataMigration *mig,
-                    PetscInt i, PetscInt j, PetscInt k, void *data,
-                    size_t payload_struct_size, size_t payload_data_size,
+                    PetscInt i, PetscInt j, PetscInt k, PetscReal *data,
                     PetscInt insert_index)
 {
   PetscErrorCode ierr;
@@ -190,36 +185,41 @@ DataMigrationInsert(DataMigration *mig,
   mig->ranks[insert_index] = rank;
 
   // Insert payload (i, j, k, data) at "insert_index"
-  void *addr = mig->payload + insert_index * payload_struct_size;
-  *(PetscInt *) (addr + 0 * sizeof(PetscInt)) = i;
-  *(PetscInt *) (addr + 1 * sizeof(PetscInt)) = j;
-  *(PetscInt *) (addr + 2 * sizeof(PetscInt)) = k;
+  ierr = PetscMemcpy(&mig->field[mig->dof * insert_index], data,
+                     mig->dof * sizeof(PetscReal)); CHKERRQ(ierr);
 
-  addr += payload_struct_size - payload_data_size;
-  ierr = PetscMemcpy(addr, data, payload_data_size); CHKERRQ(ierr);
+  mig->index[3 * insert_index + 0] = i;
+  mig->index[3 * insert_index + 1] = j;
+  mig->index[3 * insert_index + 2] = k;
 
   PetscFunctionReturn(0);
 }
 
-// Extract the i'th payload data struct.
-// The payload object "p" is pointing to must be at least
-// of size payload_struct_size.
+// Extract the extract_index'th payload.
+// "data" will be a borrowed reference from "mig"
+// holding "mig->dof" number of PetscReals.
+// Do not free it.
 static PetscErrorCode
-DataMigrationExtract(DataMigration *mig, PetscInt i, Payload *p,
-                     size_t payload_struct_size)
+DataMigrationExtract(DataMigration *mig, PetscInt extract_index,
+                     PetscInt *i, PetscInt *j, PetscInt *k,
+                     PetscReal **data)
 {
   PetscErrorCode ierr;
 
   PetscFunctionBegin;
-  if (i > mig->size) {
+  if (extract_index > mig->size) {
     MPI_Comm comm;
     ierr = PetscObjectGetComm((PetscObject) mig->ds, &comm); CHKERRQ(ierr);
     SETERRQ2(comm, PETSC_ERR_ARG_OUTOFRANGE,
-             "Requested payload %D but have only %D elements", i, mig->size);
+             "Requested payload %D but have only %D elements",
+             extract_index, mig->size);
   }
 
-  void *addr = mig->payload + i * payload_struct_size;
-  ierr = PetscMemcpy(p, addr, payload_struct_size); CHKERRQ(ierr);
+  *i = mig->index[3 * extract_index + 0];
+  *j = mig->index[3 * extract_index + 1];
+  *k = mig->index[3 * extract_index + 2];
+
+  *data = &mig->field[mig->dof * extract_index];
 
   PetscFunctionReturn(0);
 }
@@ -236,13 +236,17 @@ static PetscErrorCode DataMigrationDoMigrate(DataMigration *mig)
 
   PetscFunctionBegin;
   // Store the fields, migrate and get the field again for extraction.
-  ierr = DMSwarmRestoreField(mig->ds, "field", &mig->payload_bs, NULL,
-                             (void**) &mig->payload); CHKERRQ(ierr);
-  ierr = DMSwarmRestoreField(mig->ds, DMSwarmField_rank, &mig->rank_bs, NULL,
+  ierr = DMSwarmRestoreField(mig->ds, "index", NULL, NULL,
+                             (void**) &mig->index); CHKERRQ(ierr);
+  ierr = DMSwarmRestoreField(mig->ds, "field", NULL, NULL,
+                             (void**) &mig->field); CHKERRQ(ierr);
+  ierr = DMSwarmRestoreField(mig->ds, DMSwarmField_rank, NULL, NULL,
                              (void**) &mig->ranks); CHKERRQ(ierr);
   ierr = DMSwarmMigrate(mig->ds, PETSC_TRUE); CHKERRQ(ierr);
-  ierr = DMSwarmGetField(mig->ds, "field", &mig->payload_bs, NULL,
-                         (void**) &mig->payload); CHKERRQ(ierr);
+  ierr = DMSwarmGetField(mig->ds, "index", NULL, NULL,
+                         (void**) &mig->index); CHKERRQ(ierr);
+  ierr = DMSwarmGetField(mig->ds, "field", NULL, NULL,
+                         (void**) &mig->field); CHKERRQ(ierr);
   ierr = DMSwarmGetLocalSize(mig->ds, &mig->size); CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
@@ -296,36 +300,34 @@ static PetscErrorCode DMDAGetInfoStruct(DM da, DMDAInfo *info)
 // Where X is a global vector from da and Xn from rda.
 static PetscErrorCode
 DMDA_repart_migrate_data(DM da, DM rda, MPI_Comm comm, Vec X, Vec Xn,
-                         GridPartitioning *pnew, size_t payload_struct_size,
-                         size_t payload_data_size)
+                         GridPartitioning *pnew)
 {
   PetscErrorCode ierr;
   DataMigration mig;
-  PetscInt size, i, j, k, xs, ys, zs, xm, ym, zm;
-  Payload *payload;
-  PetscReal ***x;
+  PetscInt dof, size, ei, i, j, k, xs, ys, zs, xm, ym, zm;
+  PetscReal *data;
+  PetscReal ****x;
   PetscInt num;
 
   PetscFunctionBegin;
-  // Memory for payload
-  ierr = PetscMalloc(payload_struct_size, &payload); CHKERRQ(ierr);
-
+  ierr = DMDAGetInfo(da, NULL, NULL, NULL, NULL, NULL, NULL, NULL, &dof,
+                     NULL, NULL, NULL, NULL, NULL); CHKERRQ(ierr);
+ 
   ierr = DMDAGetCorners(da, &xs, &ys, &zs, &xm, &ym, &zm); CHKERRQ(ierr);
-  ierr = DataMigrationCreate(&mig, comm, xm * ym * zm, pnew, payload_struct_size); CHKERRQ(ierr);
+  ierr = DataMigrationCreate(&mig, comm, xm * ym * zm, pnew, dof); CHKERRQ(ierr);
 
   // Feed all local data into DataMigration
-  ierr = DMDAVecGetArray(da, X, &x);CHKERRQ(ierr);
+  ierr = DMDAVecGetArrayDOF(da, X, &x);CHKERRQ(ierr);
   num = 0;
   for (k = zs; k < zs+zm; k++) {
     for (j = ys; j < ys+ym; j++) {
       for (i = xs; i < xs+xm; i++) {
-        ierr = DataMigrationInsert(&mig, i, j, k, (void *) &x[k][j][i],
-                                   payload_struct_size, payload_data_size,
-                                   num++);
+        ierr = DataMigrationInsert(&mig, i, j, k, x[k][j][i], num++);
           CHKERRQ(ierr);
       }
     }
   }
+  ierr = DMDAVecRestoreArrayDOF(rda, X, &x); CHKERRQ(ierr);
 
   // Migrate the data to their respective new owners
   ierr = DataMigrationDoMigrate(&mig); CHKERRQ(ierr);
@@ -333,19 +335,18 @@ DMDA_repart_migrate_data(DM da, DM rda, MPI_Comm comm, Vec X, Vec Xn,
   // Change the DMDA of "X"
   ierr = VecSetDM(X, rda); CHKERRQ(ierr);
 
-  // Extract data and fill "X"
-  ierr = DMDAVecGetArray(rda, Xn, &x); CHKERRQ(ierr);
+  // Extract data and fill "Xn"
+  ierr = DMDAVecGetArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
   size = DataMigrationGetSize(&mig);
-  for (i = 0; i < size; ++i) {
-    ierr = DataMigrationExtract(&mig, i, payload, payload_struct_size);
+
+  for (ei = 0; ei < size; ++ei) {
+    ierr = DataMigrationExtract(&mig, ei, &i, &j, &k, &data);
       CHKERRQ(ierr);
-    ierr = PetscMemcpy(&x[payload->k][payload->j][payload->i],
-                       payload->data, payload_data_size); CHKERRQ(ierr);
+    ierr = PetscMemcpy(x[k][j][i], data, dof * sizeof(PetscReal));
   }
-  ierr = DMDAVecRestoreArray(rda, Xn, &x); CHKERRQ(ierr);
+  ierr = DMDAVecRestoreArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
 
   ierr = DataMigrationDestroy(&mig); CHKERRQ(ierr);
-  ierr = PetscFree(payload); CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -359,15 +360,12 @@ DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[])
   GridPartitioning pnew;
   Vec Xn;
   MPI_Comm comm;
-  size_t payload_data_size, payload_struct_size;
 
   PetscFunctionBegin;
   ierr = PetscObjectGetComm((PetscObject) *da, &comm); CHKERRQ(ierr);
 
   // Get infos from da
   ierr = DMDAGetInfoStruct(*da, &info); CHKERRQ(ierr);
-  payload_data_size = info.dof * sizeof(PetscReal);
-  payload_struct_size = sizeof(Payload) + payload_data_size;
 
   if (info.dim != 3) {
     SETERRQ(comm, PETSC_ERR_SUP, "DMDA_repart only implemented for 3d DMDAs.");
@@ -386,7 +384,7 @@ DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[])
 
   // Migrate data
   ierr = DMCreateGlobalVector(rda, &Xn); CHKERRQ(ierr);
-  ierr = DMDA_repart_migrate_data(*da, rda, comm, *X, Xn, &pnew, payload_struct_size, payload_data_size); CHKERRQ(ierr);
+  ierr = DMDA_repart_migrate_data(*da, rda, comm, *X, Xn, &pnew); CHKERRQ(ierr);
 
   // Reset "da" and "X"
   ierr = DMDestroy(da); CHKERRQ(ierr);

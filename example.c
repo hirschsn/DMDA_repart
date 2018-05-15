@@ -4,6 +4,7 @@
 
 typedef struct {
   PetscReal v;
+  PetscReal w;
 } Field;
 
 // Creates a vector, prints its ownership, redistributes and prints the new
@@ -25,7 +26,7 @@ int main(int argc, char **argv)
                       DMDA_STENCIL_STAR,
                       /* Grid dimension */ 4, 4, 1,
                       /* Node grid */ 2, 2, 1, // 4 processes (currently)
-                      /* dof */ 1, /* stencil width */ 1,
+                      /* dof */ 2, /* stencil width */ 1,
                       /* Nodes per cell */ (PetscInt[]){2, 2},
                                            (PetscInt[]){2, 2},
                                            (PetscInt[]){1},
@@ -33,7 +34,8 @@ int main(int argc, char **argv)
   //ierr = DMSetFromOptions(da);CHKERRQ(ierr); 
   ierr = DMSetUp(da);CHKERRQ(ierr);
   
-  ierr = DMDASetFieldName(da, 0, "test-values");CHKERRQ(ierr);
+  ierr = DMDASetFieldName(da, 0, "test-values-1");CHKERRQ(ierr);
+  ierr = DMDASetFieldName(da, 1, "test-values-2");CHKERRQ(ierr);
 
   ierr = DMCreateGlobalVector(da, &X); CHKERRQ(ierr);
 
@@ -52,6 +54,7 @@ int main(int argc, char **argv)
             v = i * 100 + j * 10 + k;
 	    printf("[%i] Setting %i %i %i to %.0lf\n", myrank, k, j, i, v);
             x[k][j][i].v = v;
+            x[k][j][i].w = v / 2;
           }
       }
   }
@@ -74,7 +77,7 @@ int main(int argc, char **argv)
   for (k = zs; k < zs+zm; k++) {
       for (j = ys; j < ys+ym; j++) {
           for (i = xs; i < xs+xm; i++) {
-            printf("[%i] Have %i %i %i: %.0lf\n", myrank, i, j, k, x[k][j][i].v);
+            printf("[%i] Have %i %i %i: %.0lf %.0lf\n", myrank, i, j, k, x[k][j][i].v, x[k][j][i].w);
           }
       }
   }
