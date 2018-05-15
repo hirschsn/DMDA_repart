@@ -30,7 +30,7 @@ GridPartitioningCreate(GridPartitioning *part,
 
 static PetscErrorCode GridPartitioningDestroy(GridPartitioning *p)
 {
-  return PetscFree3(p->lx, p->ly, p->lz);
+  return PetscFree6(p->lx, p->prefx, p->ly, p->prefy, p->lz, p->prefz);
 }
 
 // Prepares a GridPartitioning struct for rank search
