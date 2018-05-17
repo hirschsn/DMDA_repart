@@ -3,24 +3,38 @@ all: libdmda_repart.a
 
 PETSC_DIR = ~/opt/petsc
 
-SRC = example.c dmda_repart.c
+LIBSRC = dmda_repart.c dmda_repart_weights.c
+LIBOBJ = $(LIBSRC:.c=.o)
+EXSRC = examples/ex1.c examples/ex2.c
+EXBIN = $(EXSRC:.c=)
+SRC = $(LIBSRC) $(EXSRC)
 OBJ = $(SRC:.c=.o)
-CLEANFILES = $(OBJ) libdmda_repart.a
+CLEANFILES = $(OBJ) libdmda_repart.a $(EXBIN)
+
+CFLAGS=-I.
 
 include ${PETSC_DIR}/lib/petsc/conf/variables
 include ${PETSC_DIR}/lib/petsc/conf/rules
 
-libdmda_repart.a: dmda_repart.o
+libdmda_repart.a: $(LIBOBJ)
 	$(AR) rc $@ $?
 	$(RANLIB) $@
 
-example: example.o libdmda_repart.a
-	$(CLINKER) -o $@ $< $(PETSC_SNES_LIB) -L. -ldmda_repart
+$(EXBIN): %: %.o libdmda_repart.a
+	$(CLINKER) -o $@ $< $(PETSC_LIB) -L. -ldmda_repart
+
+ex1: examples/ex1
+ex2: examples/ex2
 
 NP?=4
 MPI?=mpich
 
-run: example
-	mpiexec.${MPI} -n ${NP} ./example
+run1: ex1
+	mpiexec.${MPI} -n ${NP} ./examples/ex1
 
-.PHONY: run
+run2: ex2
+	mpiexec.${MPI} -n ${NP} ./examples/ex2
+
+
+.PHONY: run1 run2
+

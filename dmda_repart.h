@@ -20,6 +20,20 @@
  * @param ly Number of nodes per process in y direction
  * @param lz Number of nodes per process in z direction
  */
-PetscErrorCode DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[]);
+PetscErrorCode
+DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[]);
+
+
+/** Determine new ownership ranges for repartitioning.
+ *
+ * @param da DMDA
+ * @param W global Vec of weights for each cell
+ * @param lx Number of cells per process in x-direction (out)
+ * @param ly Number of cells per process in y-direction (out)
+ * @param lz Number of cells per process in z-direction (out)
+ */
+PetscErrorCode
+DMDA_repart_ownership_ranges(DM da, Vec W, 
+                             PetscInt lx[], PetscInt ly[], PetscInt lz[]);
 
 #endif
