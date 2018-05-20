@@ -1,6 +1,8 @@
 
 #include <dmda_repart.h>
 
+// Creates a vector of weights, determines new ownership ranges according to
+// these weights and prints them.
 int main(int argc, char **argv)
 {
   DM da;
