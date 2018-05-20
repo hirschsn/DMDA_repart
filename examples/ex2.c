@@ -1,8 +1,6 @@
 
 #include <dmda_repart.h>
 
-// Creates a vector of weights, determines new ownership ranges according to
-// these weights and prints them.
 int main(int argc, char **argv)
 {
   DM da;
@@ -18,11 +16,11 @@ int main(int argc, char **argv)
   ierr = DMDACreate3d(PETSC_COMM_WORLD,
                       DM_BOUNDARY_NONE, DM_BOUNDARY_NONE, DM_BOUNDARY_NONE,
                       DMDA_STENCIL_STAR,
-                      /* Grid dimension */ 9, 9, 1,
-                      /* Node grid */ 3, 3, 1, // 4 processes (currently)
+                      /* Grid dimension */ 4, 4, 1,
+                      /* Node grid */ 2, 2, 1, // 4 processes (currently)
                       /* dof */ 2, /* stencil width */ 1,
-                      /* Nodes per cell */ (PetscInt[]){3, 3, 3},
-                                           (PetscInt[]){3, 3, 3},
+                      /* Nodes per cell */ (PetscInt[]){2, 2},
+                                           (PetscInt[]){2, 2},
                                            (PetscInt[]){1},
                       &da); CHKERRQ(ierr);
 
@@ -50,7 +48,7 @@ int main(int argc, char **argv)
   ierr = DMDAVecRestoreArrayDOF(da, X, &x); CHKERRQ(ierr);
 
 
-  PetscInt lx[3] = {-1, -1, -1}, ly[3] = {-1, -1, -1}, lz[1] = {-1};
+  PetscInt lx[2] = {-1, -1}, ly[2] = {-1, -1}, lz[1] = {-1};
   ierr = DMDA_repart_ownership_ranges(da, X, lx, ly, lz);
 
   PetscMPIInt myrank;
@@ -59,8 +57,8 @@ int main(int argc, char **argv)
     MPI_Barrier(PETSC_COMM_WORLD);
     if (i != myrank)
       continue;
-    printf("[%i] lx: %i %i %i\n", myrank, lx[0], lx[1], lx[2]);
-    printf("[%i] ly: %i %i %i\n", myrank, ly[0], ly[1], ly[2]);
+    printf("[%i] lx: %i %i\n", myrank, lx[0], lx[1]);
+    printf("[%i] ly: %i %i\n", myrank, ly[0], ly[1]);
     printf("[%i] lz: %i\n", myrank, lz[0]);
     fflush(stdout);
   }
