@@ -82,6 +82,7 @@ int main(int argc, char **argv)
       }
   }
 
+  ierr = DMDAVecRestoreArray(da, X, &x); CHKERRQ(ierr);
   ierr = VecDestroy(&X);CHKERRQ(ierr);
   ierr = DMDestroy(&da);CHKERRQ(ierr);
 }
