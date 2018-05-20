@@ -220,6 +220,38 @@ PStateReduce(PState *ps, PetscInt *ls[3])
   PetscFunctionReturn(0);
 }
 
+static PetscErrorCode
+PStateCheckIntegrity(PState *ps, PetscInt *ls[])
+{
+  PetscErrorCode ierr;
+  PetscInt i, d, sum, grid_size[3];
+
+  PetscFunctionBegin;
+  ierr = DMDAGetInfo(ps->da, NULL, &grid_size[0], &grid_size[1], &grid_size[2],
+                     NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    CHKERRQ(ierr);
+
+  for (d = 0; d < 3; ++d) {
+    sum = 0;
+    for (i = 0; i < ps->N[d]; ++i) {
+      if (ls[d][i] == 0) {
+        SETERRQ(ps->comm, PETSC_ERR_SUP,
+                "DMDA_repart_ownership_ranges:"
+                " At least one ownership range is zero."
+                " Maybe weights too skewed?");
+      }
+      sum += ls[d][i];
+    }
+
+    if (sum != grid_size[d]) {
+      SETERRQ(ps->comm, PETSC_ERR_SUP,
+              "DMDA_repart_ownership_ranges:"
+              " Internal error: Ownership range does not sum to grid size."
+              " File a bug report.");
+    }
+  }
+  PetscFunctionReturn(0);
+}
 
 PetscErrorCode
 DMDA_repart_ownership_ranges(DM da, Vec W,
@@ -243,13 +275,15 @@ DMDA_repart_ownership_ranges(DM da, Vec W,
   ierr = VecMin(W, NULL, &el);
   if (el < 0.0) {
     PetscObjectGetComm((PetscObject) da, &comm);
-    SETERRQ(comm, PETSC_ERR_ARG_WRONG, "DMDA_repart_ownership_ranges: Weights must be positive!");
+    SETERRQ(comm, PETSC_ERR_ARG_WRONG,
+            "DMDA_repart_ownership_ranges: Weights must be positive!");
   }
 
   ierr = PStateCreate(&ps, da); CHKERRQ(ierr);
   ierr = PStateLocalSum(&ps, W); CHKERRQ(ierr);
   ierr = PStateGlobalSum(&ps); CHKERRQ(ierr);
   ierr = PStateReduce(&ps, (PetscInt *[]){lx, ly, lz}); CHKERRQ(ierr);
+  ierr = PStateCheckIntegrity(&ps, (PetscInt *[]){lx, ly, lz}); CHKERRQ(ierr);
 
   PStateDestroy(&ps);
   PetscFunctionReturn(0);
