@@ -2,6 +2,7 @@
 #include "dmda_repart.h"
 
 #include <petscdmswarm.h>
+#include <petscts.h>
 
 
 /*******************************************/
@@ -256,12 +257,15 @@ static PetscErrorCode DataMigrationDoMigrate(DataMigration *mig)
 /* Utility */
 /***********/
 
-// Copies all field names from src to dst.
-static PetscErrorCode CopyFieldNames(DM dst, DM src)
+// Copies all field names from src to dst, the application context
+// and the IFunctional
+static PetscErrorCode CopyDMInfo(DM dst, DM src)
 {
   PetscErrorCode ierr;
   const char *name;
   PetscInt dof, i;
+  void *ctx;
+  TSIFunction f;
 
   PetscFunctionBegin;
   ierr = DMDAGetInfo(src, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
@@ -271,6 +275,12 @@ static PetscErrorCode CopyFieldNames(DM dst, DM src)
     ierr = DMDAGetFieldName(src, i, &name); CHKERRQ(ierr);
     ierr = DMDASetFieldName(dst, i, name); CHKERRQ(ierr);
   }
+
+  ierr = DMGetApplicationContext(src, &ctx); CHKERRQ(ierr);
+  ierr = DMSetApplicationContext(dst, ctx); CHKERRQ(ierr);
+
+  ierr = DMTSGetIFunction(src, &f, &ctx); CHKERRQ(ierr);
+  ierr = DMTSSetIFunction(dst, f, ctx); CHKERRQ(ierr);
 
   PetscFunctionReturn(0);
 }
@@ -377,7 +387,7 @@ DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[])
                      info.dof, info.s, lx, ly, lz,
                      &rda); CHKERRQ(ierr);
   ierr = DMSetUp(rda); CHKERRQ(ierr);
-  ierr = CopyFieldNames(rda, *da); CHKERRQ(ierr);
+  ierr = CopyDMInfo(rda, *da); CHKERRQ(ierr);
 
   // Migrate data
   ierr = DMCreateGlobalVector(rda, &Xn); CHKERRQ(ierr);

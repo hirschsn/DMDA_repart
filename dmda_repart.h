@@ -12,6 +12,9 @@
  *
  * The ownership range of the new da is given by lx, ly and lz.
  *
+ * This function copies the TSIFunction, the ApplicationContext and the Field
+ * Names from the old to the new, repartitioned da.
+ *
  * Note: Reset TS, SNES, etc. afterwards!
  *
  * @param da Pointer to the DMDA to be replaced
