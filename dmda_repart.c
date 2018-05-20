@@ -332,9 +332,6 @@ DMDA_repart_migrate_data(DM da, DM rda, MPI_Comm comm, Vec X, Vec Xn,
   // Migrate the data to their respective new owners
   ierr = DataMigrationDoMigrate(&mig); CHKERRQ(ierr);
 
-  // Change the DMDA of "X"
-  ierr = VecSetDM(X, rda); CHKERRQ(ierr);
-
   // Extract data and fill "Xn"
   ierr = DMDAVecGetArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
   size = DataMigrationGetSize(&mig);
