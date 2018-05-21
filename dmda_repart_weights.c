@@ -7,6 +7,7 @@
 typedef struct {
   DM da;
   MPI_Comm comm;
+  PetscInt dim; // Number of dimensions
   PetscInt xyzm[3]; // Local grid size {xm, ym, zm} in Petsc speak
   // "cs" is a set of three vectors in (one in x, y, z-direction)
   // with each element, e.g., cs[0][i] holding the sum
@@ -24,12 +25,20 @@ typedef struct {
 
 // Inverse of rank_of_coord
 static void
-proc_coord_of_rank(PetscMPIInt rank, PetscInt n[3], PetscInt N[3])
+PStateSetProcCoords(PState *ps, PetscMPIInt rank)
 {
-  n[0] = rank % N[0];
-  rank /= N[0];
-  n[1] = rank % N[1];
-  n[2] = rank / N[1];
+  ps->n[0] = rank % ps->N[0];
+
+  if (ps->dim == 1)
+    return;
+
+  rank /= ps->N[0];
+  ps->n[1] = rank % ps->N[1];
+
+  if (ps->dim == 2)
+    return;
+
+  ps->n[2] = rank / ps->N[1];
 }
 
 // Initializes a PState struct.
@@ -51,10 +60,10 @@ PStateCreate(PState *ps, DM da)
   ierr = PetscObjectGetComm((PetscObject) da, &ps->comm); CHKERRQ(ierr);
 
   MPI_Comm_rank(ps->comm, &myrank);
-  ierr = DMDAGetInfo(da, NULL, NULL, NULL, NULL,
+  ierr = DMDAGetInfo(da, &ps->dim, NULL, NULL, NULL,
                      &ps->N[0], &ps->N[1], &ps->N[2],
                      NULL, NULL, NULL, NULL, NULL, NULL); CHKERRQ(ierr);
-  proc_coord_of_rank(myrank, ps->n, ps->N);
+  PStateSetProcCoords(ps, myrank);
 
   ierr = PetscDataTypeToMPIDataType(PETSC_REAL, &ps->mpi_petsc_real);
     CHKERRQ(ierr);
@@ -72,18 +81,13 @@ PStateDestroy(PState *ps)
 
 // Produces local 1d co-dim sums from "W" and stores the in "ps"
 static PetscErrorCode
-PStateLocalSum(PState *ps, Vec W)
+PStateLocalSum3D(PState *ps, Vec W)
 {
   PetscErrorCode ierr;
   PetscInt i, j, k, xs, ys, zs, xm, ym, zm;
   PetscReal ****x, el;
 
   PetscFunctionBegin;
-
-  for (j = 0; j < 3; ++j)
-    for (i = 0; i < ps->xyzm[j]; ++i)
-        ps->cs[j][i] = 0.0;
-
   ierr = DMDAGetCorners(ps->da, &xs, &ys, &zs, &xm, &ym, &zm); CHKERRQ(ierr);
   ierr = DMDAVecGetArrayDOF(ps->da, W, &x); CHKERRQ(ierr);
   for (k = 0; k < zm; k++) {
@@ -97,7 +101,68 @@ PStateLocalSum(PState *ps, Vec W)
     }
   }
   ierr = DMDAVecRestoreArrayDOF(ps->da, W, &x); CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
 
+static PetscErrorCode
+PStateLocalSum2D(PState *ps, Vec W)
+{
+  PetscErrorCode ierr;
+  PetscInt i, j, xs, ys, xm, ym;
+  PetscReal ***x, el;
+
+  PetscFunctionBegin;
+  ierr = DMDAGetCorners(ps->da, &xs, &ys, NULL, &xm, &ym, NULL); CHKERRQ(ierr);
+  ierr = DMDAVecGetArrayDOF(ps->da, W, &x); CHKERRQ(ierr);
+  for (j = 0; j < ym; j++) {
+    for (i = 0; i < xm; i++) {
+      el = x[ys+j][xs+i][0];
+      ps->cs[0][i] += el;
+      ps->cs[1][j] += el;
+    }
+  }
+  ierr = DMDAVecRestoreArrayDOF(ps->da, W, &x); CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode
+PStateLocalSum1D(PState *ps, Vec W)
+{
+  PetscErrorCode ierr;
+  PetscInt i, xs, xm;
+  PetscReal **x, el;
+
+  PetscFunctionBegin;
+  ierr = DMDAGetCorners(ps->da, &xs, NULL, NULL, &xm, NULL, NULL); CHKERRQ(ierr);
+  ierr = DMDAVecGetArrayDOF(ps->da, W, &x); CHKERRQ(ierr);
+  // Simply a copy
+  for (i = 0; i < xm; i++) {
+    el = x[xs+i][0];
+    ps->cs[0][i] += el;
+  }
+  ierr = DMDAVecRestoreArrayDOF(ps->da, W, &x); CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode
+PStateLocalSum(PState *ps, Vec W)
+{
+  static PetscErrorCode (*sum_fn[])(PState *, Vec) = {
+    [1] = PStateLocalSum1D,
+    [2] = PStateLocalSum2D,
+    [3] = PStateLocalSum3D
+  };
+
+  PetscErrorCode ierr;
+  PetscInt i, j;
+
+  PetscFunctionBegin;
+  // Zero out all sum vectors
+  for (j = 0; j < ps->dim; ++j)
+    for (i = 0; i < ps->xyzm[j]; ++i)
+        ps->cs[j][i] = 0.0;
+
+  ierr = sum_fn[ps->dim](ps, W); CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -119,16 +184,17 @@ PStateGlobalSum(PState *ps)
 
   PetscFunctionBegin;
 
-  for (d = 0; d < 3; ++d) {
+  for (d = 0; d < ps->dim; ++d) {
     // Key is not important since we do an Allreduce.
+    // NB: For 1d this is N allreduces over 1 process each
     MPI_Comm_split(ps->comm, ps->n[d], 0, &c[d]);
     MPI_Iallreduce(MPI_IN_PLACE, ps->cs[d], ps->xyzm[d], ps->mpi_petsc_real,
                    MPI_SUM, c[d], &req[d]);
   }
 
-  MPI_Waitall(3, req, MPI_STATUSES_IGNORE);
+  MPI_Waitall(ps->dim, req, MPI_STATUSES_IGNORE);
 
-  for (d = 0; d < 3; ++d)
+  for (d = 0; d < ps->dim; ++d)
     MPI_Comm_free(&c[d]);
 
   PetscFunctionReturn(0);
@@ -186,6 +252,24 @@ create_1d_subdomains(PState *ps, PetscReal *cs, PetscInt *ld, PetscInt len,
   PetscFunctionReturn(0);
 }
 
+static PetscInt
+PStateReduceGetColor(PState *ps, PetscInt d)
+{
+  // Direction perpendicular to the one of PStateGlobalSum.
+  // I.e. the x-direction for a given ny, nz: (*, ny, nz).
+  // Therefore, we create a unique integer for every
+  // (ny, nz) pair.
+  PetscInt ndir = (d + 1) % ps->dim;
+  PetscInt nndir = (d + 2) % ps->dim;
+
+  if (ps->dim == 1)
+    return 0;
+  else if (ps->dim == 2)
+    return ps->n[ndir];
+  else // 3
+    return ps->n[ndir] * ps->N[nndir] + ps->n[nndir];
+}
+
 // Determines the ownership ranges "ls" = {lx, ly, lz}.
 // Note: PStateGlobalSum must have been called before.
 static PetscErrorCode
@@ -195,26 +279,18 @@ PStateReduce(PState *ps, PetscInt *ls[3])
   MPI_Comm c[3]; 
   MPI_Request req[3];
   PetscInt d;
-  int color, ndir, nndir;
 
   PetscFunctionBegin;
 
-  for (d = 0; d < 3; ++d) {
-    ndir = (d + 1) % 3;
-    nndir = (d + 2) % 3;
-    // Direction perpendicular to the one of PStateGlobalSum.
-    // I.e. the x-direction for a given ny, nz: (*, ny, nz).
-    // Therefore, we create a unique integer for every
-    // (ny, nz) pair.
-    color = ps->n[ndir] * ps->N[nndir] + ps->n[nndir];
-    MPI_Comm_split(ps->comm, color, 0, &c[d]);
+  for (d = 0; d < ps->dim; ++d) {
+    MPI_Comm_split(ps->comm, PStateReduceGetColor(ps, d), 0, &c[d]);
     ierr = create_1d_subdomains(ps, ps->cs[d], ls[d], ps->xyzm[d], c[d],
                                 &req[d]); CHKERRQ(ierr);
   }
 
-  MPI_Waitall(3, req, MPI_STATUSES_IGNORE);
+  MPI_Waitall(ps->dim, req, MPI_STATUSES_IGNORE);
 
-  for (d = 0; d < 3; ++d)
+  for (d = 0; d < ps->dim; ++d)
     MPI_Comm_free(&c[d]);
 
   PetscFunctionReturn(0);
@@ -231,7 +307,7 @@ PStateCheckIntegrity(PState *ps, PetscInt *ls[])
                      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
     CHKERRQ(ierr);
 
-  for (d = 0; d < 3; ++d) {
+  for (d = 0; d < ps->dim; ++d) {
     sum = 0;
     for (i = 0; i < ps->N[d]; ++i) {
       if (ls[d][i] == 0) {
@@ -259,20 +335,11 @@ DMDA_repart_ownership_ranges(DM da, Vec W,
 {
   PetscErrorCode ierr;
   PetscReal el;
-  PetscInt dim;
   PState ps;
   MPI_Comm comm;
 
   PetscFunctionBegin;
-  ierr = DMDAGetInfo(da, &dim, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                     NULL, NULL, NULL, NULL); CHKERRQ(ierr);
-
-  if (dim != 3) {
-    PetscObjectGetComm((PetscObject) da, &comm);
-    SETERRQ(comm, PETSC_ERR_SUP, "DMDA_repart only implemented for 3d DMDAs.");
-  }
-
-  ierr = VecMin(W, NULL, &el);
+  ierr = VecMin(W, NULL, &el); CHKERRQ(ierr);
   if (el < 0.0) {
     PetscObjectGetComm((PetscObject) da, &comm);
     SETERRQ(comm, PETSC_ERR_ARG_WRONG,

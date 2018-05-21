@@ -32,11 +32,16 @@ DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[],
 
 /** Determine new ownership ranges for repartitioning.
  *
+ * Supply NULL as "lz" if operating on a 2D DMDA and also additionally
+ * "ly" for 1D DMDAs.
+ * Other than for usage with 1D or 2D DMDAs, neither, lx, ly nor lz are allowed
+ * to be NULL.
+ *
  * @param da DMDA
  * @param W global Vec of weights for each cell
  * @param lx Number of cells per process in x-direction (out)
- * @param ly Number of cells per process in y-direction (out)
- * @param lz Number of cells per process in z-direction (out)
+ * @param ly Number of cells per process in y-direction (out), possibly NULL
+ * @param lz Number of cells per process in z-direction (out), possibly NULL
  */
 PetscErrorCode
 DMDA_repart_ownership_ranges(DM da, Vec W, 
