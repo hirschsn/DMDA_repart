@@ -337,7 +337,7 @@ DMDA_repart_migrate_data(DM da, DM rda, MPI_Comm comm, Vec X, Vec Xn,
       }
     }
   }
-  ierr = DMDAVecRestoreArrayDOF(rda, X, &x); CHKERRQ(ierr);
+  ierr = DMDAVecRestoreArrayDOF(da, X, &x); CHKERRQ(ierr);
 
   // Migrate the data to their respective new owners
   ierr = DataMigrationDoMigrate(&mig); CHKERRQ(ierr);
