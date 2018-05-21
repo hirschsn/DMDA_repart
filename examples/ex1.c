@@ -64,7 +64,8 @@ int main(int argc, char **argv)
   ierr = DMDA_repart(&da, &X,
                      (PetscInt[]){1, 3},
                      (PetscInt[]){1, 3},
-                     (PetscInt[]){1});
+                     (PetscInt[]){1},
+                     PETSC_FALSE);
 
   // Unreliable hack to get DM swarm migration output not mixed
   // with the following output.

@@ -22,9 +22,12 @@
  * @param lx Number of nodes per process in x direction
  * @param ly Number of nodes per process in y direction
  * @param lz Number of nodes per process in z direction
+ * @param setFromOptions Set this to PETSC_TRUE if DMSetFromOptions should
+ *                       be called on the newly created DMDA
  */
 PetscErrorCode
-DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[]);
+DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[],
+            PetscBool setFromOptions);
 
 
 /** Determine new ownership ranges for repartitioning.

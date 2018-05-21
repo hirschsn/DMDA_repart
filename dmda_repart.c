@@ -359,7 +359,8 @@ DMDA_repart_migrate_data(DM da, DM rda, MPI_Comm comm, Vec X, Vec Xn,
 
 
 PetscErrorCode
-DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[])
+DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[],
+            PetscBool setFromOptions)
 {
   PetscErrorCode ierr;
   DMDAInfo info;
@@ -386,6 +387,9 @@ DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[])
                      info.M, info.N, info.P, info.m, info.n, info.p,
                      info.dof, info.s, lx, ly, lz,
                      &rda); CHKERRQ(ierr);
+  if (setFromOptions) {
+    ierr = DMSetFromOptions(rda); CHKERRQ(ierr);
+  }
   ierr = DMSetUp(rda); CHKERRQ(ierr);
   ierr = CopyDMInfo(rda, *da); CHKERRQ(ierr);
 

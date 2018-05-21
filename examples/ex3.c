@@ -131,7 +131,7 @@ int main(int argc, char **argv)
 
     ierr = VecDestroy(&W);
     t2 -= MPI_Wtime();
-    ierr = DMDA_repart(&da, &X, lx, ly, lz); CHKERRQ(ierr);
+    ierr = DMDA_repart(&da, &X, lx, ly, lz, PETSC_FALSE); CHKERRQ(ierr);
     t2 += MPI_Wtime();
 
     PetscPrintf(PETSC_COMM_WORLD, "Checking result...");
