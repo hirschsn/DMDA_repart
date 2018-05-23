@@ -254,15 +254,13 @@ static PetscErrorCode DataMigrationDoMigrate(DataMigration *mig)
 /* Utility */
 /***********/
 
-// Copies all field names from src to dst, the application context
-// and the IFunctional
+// Copies all field names from src to dst and the application context
 static PetscErrorCode CopyDMInfo(DM dst, DM src)
 {
   PetscErrorCode ierr;
   const char *name;
   PetscInt dof, i;
   void *ctx;
-  TSIFunction f;
 
   PetscFunctionBegin;
   ierr = DMDAGetInfo(src, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
@@ -275,9 +273,6 @@ static PetscErrorCode CopyDMInfo(DM dst, DM src)
 
   ierr = DMGetApplicationContext(src, &ctx); CHKERRQ(ierr);
   ierr = DMSetApplicationContext(dst, ctx); CHKERRQ(ierr);
-
-  ierr = DMTSGetIFunction(src, &f, &ctx); CHKERRQ(ierr);
-  ierr = DMTSSetIFunction(dst, f, ctx); CHKERRQ(ierr);
 
   PetscFunctionReturn(0);
 }

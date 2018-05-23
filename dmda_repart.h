@@ -12,10 +12,12 @@
  *
  * The ownership range of the new da is given by lx, ly and lz.
  *
- * This function copies the TSIFunction, the ApplicationContext and the Field
+ * This function copies the ApplicationContext and the Field
  * Names from the old to the new, repartitioned da.
  *
  * Note: Reset TS, SNES, etc. afterwards!
+ * Also call any additional setters that were called on the
+ * original DM.
  *
  * @param da Pointer to the DMDA to be replaced
  * @param X Pointer to the Vec to be replaced
