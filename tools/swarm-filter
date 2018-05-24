@@ -1,0 +1,38 @@
+#!/usr/bin/awk -f
+
+# Small awk script that filters out DMSwarm output (caused by the data
+# migration in DMDA_repart) from the output of an application.
+# If your application has its own DMSwarm output that you need to see, you have
+# to come up with a more elaborate solution (e.g. marking the DMDA_repart call
+# in the output of your application and then filtering it out).
+#
+# Usage:
+# ./my-petsc-application-with-repart | swarm-filter
+#
+
+BEGIN {
+  is_swarm_output = 0;
+  is_messages = 0;
+}
+
+/DMSwarmDataEx:/ {
+  is_swarm_output = 1;
+}
+
+!/<<<<</ && !/>>>>>/ && !/atomic size:/ {
+  if (is_messages) {
+    is_messages = 0;
+    is_swarm_output = 0;
+  }
+}
+
+/Message lengths:/ {
+  if (is_swarm_output)
+    is_messages = 1;
+}
+
+{
+  if (!is_swarm_output)
+    print;
+}
+
