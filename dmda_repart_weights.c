@@ -3,6 +3,7 @@
 #include <petscvec.h>
 #include <petscdmda.h>
 #include <mpi.h>
+#include <math.h>
 
 typedef struct {
   DM da;
@@ -229,6 +230,12 @@ create_1d_subdomains(PState *ps, PetscReal *cs, PetscInt *ld, PetscInt len,
 
   MPI_Wait(&r1, MPI_STATUS_IGNORE);
   target = gsum / csize;
+
+  if (!isnormal(target) || !isnormal(1.0 / target)) {
+    SETERRQ(comm, PETSC_ERR_SUP,
+            "Sum of weights is not a normal floating point value."
+            " All weights zero?");
+  }
 
   MPI_Wait(&r2, MPI_STATUS_IGNORE);
   // Assign 1d ranges to processes and create the ownership range
