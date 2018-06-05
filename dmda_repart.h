@@ -46,7 +46,7 @@ DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[],
  * @param lz Number of cells per process in z-direction (out), possibly NULL
  */
 PetscErrorCode
-DMDA_repart_ownership_ranges(DM da, Vec W, 
+DMDA_repart_ownership_ranges(DM da, Vec W,
                              PetscInt lx[], PetscInt ly[], PetscInt lz[]);
 
 #endif

@@ -9,6 +9,7 @@ typedef struct {
   DM da;
   MPI_Comm comm;
   PetscInt dim; // Number of dimensions
+  PetscInt dof; // Number of dof in weight vector
   PetscInt xyzm[3]; // Local grid size {xm, ym, zm} in Petsc speak
   // "cs" is a set of three vectors in (one in x, y, z-direction)
   // with each element, e.g., cs[0][i] holding the sum
@@ -63,7 +64,7 @@ PStateCreate(PState *ps, DM da)
   MPI_Comm_rank(ps->comm, &myrank);
   ierr = DMDAGetInfo(da, &ps->dim, NULL, NULL, NULL,
                      &ps->N[0], &ps->N[1], &ps->N[2],
-                     NULL, NULL, NULL, NULL, NULL, NULL); CHKERRQ(ierr);
+                     &ps->dof, NULL, NULL, NULL, NULL, NULL); CHKERRQ(ierr);
   PStateSetProcCoords(ps, myrank);
 
   ierr = PetscDataTypeToMPIDataType(PETSC_REAL, &ps->mpi_petsc_real);
@@ -85,7 +86,7 @@ static PetscErrorCode
 PStateLocalSum3D(PState *ps, Vec W)
 {
   PetscErrorCode ierr;
-  PetscInt i, j, k, xs, ys, zs, xm, ym, zm;
+  PetscInt i, j, k, xs, ys, zs, xm, ym, zm, d;
   PetscReal ****x, el;
 
   PetscFunctionBegin;
@@ -94,7 +95,9 @@ PStateLocalSum3D(PState *ps, Vec W)
   for (k = 0; k < zm; k++) {
     for (j = 0; j < ym; j++) {
       for (i = 0; i < xm; i++) {
-        el = x[zs+k][ys+j][xs+i][0];
+        el = 0.0;
+        for (d = 0; d < ps->dof; d++)
+          el += x[zs+k][ys+j][xs+i][d];
         ps->cs[0][i] += el;
         ps->cs[1][j] += el;
         ps->cs[2][k] += el;
@@ -106,10 +109,10 @@ PStateLocalSum3D(PState *ps, Vec W)
 }
 
 static PetscErrorCode
-PStateLocalSum2D(PState *ps, Vec W)
+PStateLocalSum2D(PState *ps, Vec W, PetscInt w_field)
 {
   PetscErrorCode ierr;
-  PetscInt i, j, xs, ys, xm, ym;
+  PetscInt i, j, xs, ys, xm, ym, d;
   PetscReal ***x, el;
 
   PetscFunctionBegin;
@@ -117,7 +120,9 @@ PStateLocalSum2D(PState *ps, Vec W)
   ierr = DMDAVecGetArrayDOF(ps->da, W, &x); CHKERRQ(ierr);
   for (j = 0; j < ym; j++) {
     for (i = 0; i < xm; i++) {
-      el = x[ys+j][xs+i][0];
+      el = 0.0;
+      for (d = 0; d < ps->dof; d++)
+        el += x[ys+j][xs+i][d];
       ps->cs[0][i] += el;
       ps->cs[1][j] += el;
     }
@@ -127,18 +132,19 @@ PStateLocalSum2D(PState *ps, Vec W)
 }
 
 static PetscErrorCode
-PStateLocalSum1D(PState *ps, Vec W)
+PStateLocalSum1D(PState *ps, Vec W, PetscInt w_field)
 {
   PetscErrorCode ierr;
-  PetscInt i, xs, xm;
+  PetscInt i, xs, xm, d;
   PetscReal **x, el;
 
   PetscFunctionBegin;
   ierr = DMDAGetCorners(ps->da, &xs, NULL, NULL, &xm, NULL, NULL); CHKERRQ(ierr);
   ierr = DMDAVecGetArrayDOF(ps->da, W, &x); CHKERRQ(ierr);
-  // Simply a copy
   for (i = 0; i < xm; i++) {
-    el = x[xs+i][0];
+    el = 0.0;
+    for (d = 0; d < ps->dof; d++)
+      el += x[xs+i][d];
     ps->cs[0][i] += el;
   }
   ierr = DMDAVecRestoreArrayDOF(ps->da, W, &x); CHKERRQ(ierr);

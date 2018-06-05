@@ -110,7 +110,7 @@ int main(int argc, char **argv)
                         DM_BOUNDARY_NONE,
                         /* Grid dimension */
                         10 * dims[0],
-                        /* dof */ 2, /* stencil width */ 1,
+                        /* dof */ 1, /* stencil width */ 1,
                         /* Nodes per cell */ NULL,
                         &da); CHKERRQ(ierr);
     break;
@@ -122,7 +122,7 @@ int main(int argc, char **argv)
                         10 * dims[0], 10 * dims[1],
                         /* Node grid */
                         dims[0], dims[1],
-                        /* dof */ 2, /* stencil width */ 1,
+                        /* dof */ 1, /* stencil width */ 1,
                         /* Nodes per cell */ NULL, NULL,
                         &da); CHKERRQ(ierr);
     break;
@@ -134,7 +134,7 @@ int main(int argc, char **argv)
                         10 * dims[0], 10 * dims[1], 10 * dims[2],
                         /* Node grid */
                         dims[0], dims[1], dims[2],
-                        /* dof */ 2, /* stencil width */ 1,
+                        /* dof */ 1, /* stencil width */ 1,
                         /* Nodes per cell */ NULL, NULL, NULL,
                         &da); CHKERRQ(ierr);
     break;
