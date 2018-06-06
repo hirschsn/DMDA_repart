@@ -8,22 +8,24 @@ typedef struct {
   PetscReal v;
 } Field;
 
-PetscInt get_value(DM da, PetscInt i, PetscInt j, PetscInt k)
+PetscInt get_value(DM da, PetscInt i, PetscInt j, PetscInt k, PetscInt mult)
 {
-  PetscInt dim, M, N, P;
+  PetscInt dim, M, N, P, res = 0;
 
   DMDAGetInfo(da, &dim, &M, &N, &P, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
   if (dim == 1)
-    return i;
+    res = i;
   else if (dim == 2)
-    return i * M + j;
+    res = i * M + j;
   else
-    return i * M * N + j * N + k;
+    res = i * M * N + j * N + k;
+  
+  return res * mult;
 }
 
 // Checks the contents of vector "X" against the values it should hold
 static PetscErrorCode
-check_vec_3d(DM da, Vec X)
+check_vec_3d(DM da, PetscInt n, Vec X)
 {
   PetscErrorCode ierr;
   PetscInt xs, ys, zs, xm, ym, zm, i, j, k;
@@ -37,7 +39,7 @@ check_vec_3d(DM da, Vec X)
   for (k = zs; k < zs+zm; k++) {
     for (j = ys; j < ys+ym; j++) {
       for (i = xs; i < xs+xm; i++) {
-        v = get_value(da, i, j, k);
+        v = get_value(da, i, j, k, n);
         if (x[k][j][i].v != v) {
           SETERRQ5(PETSC_COMM_WORLD, PETSC_ERR_PLIB, "Error: Have %i %i %i: %.0lf should be %.0lf\n", i, j, k, x[k][j][i].v, v);
         }
@@ -50,7 +52,7 @@ check_vec_3d(DM da, Vec X)
 }
 
 static PetscErrorCode
-fill_vec_3d(DM da, Vec X)
+fill_vec_3d(DM da, PetscInt n, Vec X)
 {
   PetscErrorCode ierr;
   PetscInt xs, ys, zs, xm, ym, zm, i, j, k;
@@ -63,7 +65,7 @@ fill_vec_3d(DM da, Vec X)
   for (k = zs; k < zs+zm; k++) {
     for (j = ys; j < ys+ym; j++) {
       for (i = xs; i < xs+xm; i++) {
-        x[k][j][i].v = get_value(da, i, j, k);
+        x[k][j][i].v = get_value(da, i, j, k, n);
       }
     }
   }
@@ -78,11 +80,11 @@ int main(int argc, char **argv)
 {
   DM da;
   PetscErrorCode ierr;
-  PetscMPIInt dim = 3, dims[3] = {0, 0, 0}, size, rank;
+  PetscMPIInt dim = 3, dims[3] = {0, 0, 0}, size, rank, nvec = 5;
   PetscInt grid[3], d, *lx, *ly, *lz;
-  Vec X, W;
+  Vec *X, W;
   PetscReal v;
-  PetscInt i, j;
+  PetscInt i, j, vno;
   PetscRandom r;
   double t1 = 0., t2 = 0.;
 
@@ -91,9 +93,10 @@ int main(int argc, char **argv)
   ierr = PetscOptionsBegin(PETSC_COMM_WORLD, PETSC_NULL, "Repart test", "");
     CHKERRQ(ierr);
   ierr = PetscOptionsGetInt(NULL, NULL, "-d", &dim, NULL); CHKERRQ(ierr);
+  ierr = PetscOptionsGetInt(NULL, NULL, "-n", &nvec, NULL); CHKERRQ(ierr);
   ierr = PetscOptionsEnd();CHKERRQ(ierr);
 
-  ierr = PetscPrintf(PETSC_COMM_WORLD, "%iD test\n", dim); CHKERRQ(ierr);
+  ierr = PetscPrintf(PETSC_COMM_WORLD, "%iD test with %i Vec\n", dim, nvec); CHKERRQ(ierr);
 
   MPI_Comm_size(PETSC_COMM_WORLD, &size);
   MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
@@ -139,18 +142,20 @@ int main(int argc, char **argv)
 
   ierr = DMDASetFieldName(da, 0, "test-values");CHKERRQ(ierr);
 
-  ierr = DMCreateGlobalVector(da, &X); CHKERRQ(ierr);
-
-  switch(dim) {
-  case 3:
-    ierr = fill_vec_3d(da, X);
-    break;
-  //case 2:
-  //  ierr = fill_vec_2d(da, X);
-  //  break;
-  //case 1:
-  //  ierr = fill_vec_1d(da, X);
-  //  break;
+  ierr = PetscMalloc1(nvec, &X); CHKERRQ(ierr);
+  for (vno = 0; vno < nvec; ++vno) {
+    ierr = DMCreateGlobalVector(da, &X[vno]); CHKERRQ(ierr);
+    switch(dim) {
+    case 3:
+      ierr = fill_vec_3d(da, vno, X[vno]);
+      break;
+    //case 2:
+    //  ierr = fill_vec_2d(da, vno, X[vno]);
+    //  break;
+    //case 1:
+    //  ierr = fill_vec_1d(da, vno, X[vno]);
+    //  break;
+    }
   }
   
 
@@ -192,20 +197,23 @@ int main(int argc, char **argv)
 
     ierr = VecDestroy(&W);
     t2 -= MPI_Wtime();
-    ierr = DMDA_repart(&da, &X, lx, ly, lz, PETSC_FALSE); CHKERRQ(ierr);
+    ierr = DMDA_repartv(&da, lx, ly, lz, PETSC_FALSE, nvec, X); CHKERRQ(ierr);
     t2 += MPI_Wtime();
 
     PetscPrintf(PETSC_COMM_WORLD, "Checking result...");
-    switch(dim) {
-    case 3:
-      ierr = check_vec_3d(da, X);
-      break;
-    //case 2:
-    //  ierr = check_vec_2d(da, X);
-    //  break;
-    //case 1:
-    //  ierr = check_vec_1d(da, X);
-    //  break;
+
+    for (vno = 0; vno < nvec; ++vno) {
+      switch(dim) {
+      case 3:
+        ierr = check_vec_3d(da, vno, X[vno]);
+        break;
+      //case 2:
+      //  ierr = check_vec_2d(da, vno, X[vno]);
+      //  break;
+      //case 1:
+      //  ierr = check_vec_1d(da, vno, X[vno]);
+      //  break;
+      }
     }
     PetscPrintf(PETSC_COMM_WORLD, " successful.\n");
   }
@@ -222,7 +230,10 @@ int main(int argc, char **argv)
   ierr = PetscRandomDestroy(&r); CHKERRQ(ierr);
   ierr = PetscFree3(lx, ly, lz); CHKERRQ(ierr);
 
-  ierr = VecDestroy(&X);CHKERRQ(ierr);
+  for (vno = 0; vno < nvec; ++vno) {
+    ierr = VecDestroy(&X[vno]);CHKERRQ(ierr);
+  }
+  ierr = PetscFree(X); CHKERRQ(ierr);
   ierr = DMDestroy(&da);CHKERRQ(ierr);
 }
 

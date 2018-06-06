@@ -3,6 +3,7 @@
 
 #include <petscdmswarm.h>
 #include <petscts.h>
+#include <stdarg.h>
 
 
 /*******************************************/
@@ -108,6 +109,7 @@ GridPartitioningGetOwnerRank(GridPartitioning *p, PetscInt coord[3])
 // Data migration state storage
 typedef struct {
   DM ds;         // Swarm DM used for migration
+  PetscInt nvec; // Number of vectors to migrate
   PetscInt dof;  // Number of degrees of freedom (block size of "field")
   PetscInt size; // Number of process local data points
 
@@ -125,7 +127,7 @@ typedef struct {
 // Initializes a DataMigration struct.
 static PetscErrorCode
 DataMigrationCreate(DataMigration *mig, MPI_Comm comm, PetscInt size,
-                    GridPartitioning *pnew, PetscInt dof)
+                    GridPartitioning *pnew, PetscInt dof, PetscInt nvec)
 {
   PetscErrorCode ierr;
 
@@ -136,7 +138,7 @@ DataMigrationCreate(DataMigration *mig, MPI_Comm comm, PetscInt size,
   ierr = DMSwarmInitializeFieldRegister(mig->ds); CHKERRQ(ierr);
   ierr = DMSwarmRegisterPetscDatatypeField(mig->ds, "index", 3, PETSC_INT);
     CHKERRQ(ierr);
-  ierr = DMSwarmRegisterPetscDatatypeField(mig->ds, "field", dof, PETSC_REAL);
+  ierr = DMSwarmRegisterPetscDatatypeField(mig->ds, "field", dof * nvec, PETSC_REAL);
     CHKERRQ(ierr);
   ierr = DMSwarmFinalizeFieldRegister(mig->ds); CHKERRQ(ierr);
 
@@ -152,6 +154,7 @@ DataMigrationCreate(DataMigration *mig, MPI_Comm comm, PetscInt size,
 
   mig->pnew = pnew;
   mig->dof = dof;
+  mig->nvec = nvec;
 
   PetscFunctionReturn(0);
 }
@@ -161,30 +164,34 @@ static PetscErrorCode DataMigrationDestroy(DataMigration *mig)
   return DMDestroy(&mig->ds);
 }
 
-// Insert a "mig->dof" PetscReals starting at "data".
-// These data are associated to grid cell "coord"
-// (i, j, k) and are inserted into the DM swarm field
-// at position insert_index.
-static PetscErrorCode
-DataMigrationInsert(DataMigration *mig, PetscInt coord[3], PetscReal *data,
-                    PetscInt insert_index)
+
+// Associates "insert_index" with the grid cell at coordinate
+// "coord".
+static PetscErrorCode 
+DataMigrationInsertIndex(DataMigration *mig, PetscInt coord[3],
+                         PetscInt insert_index)
 {
-  PetscErrorCode ierr;
-  PetscInt rank, d;
+  PetscInt d;
 
   PetscFunctionBegin;
-  rank = GridPartitioningGetOwnerRank(mig->pnew, coord);
-
-  mig->ranks[insert_index] = rank;
-
-  // Insert payload (i, j, k, data) at "insert_index"
-  ierr = PetscMemcpy(&mig->field[mig->dof * insert_index], data,
-                     mig->dof * sizeof(PetscReal)); CHKERRQ(ierr);
-
+  mig->ranks[insert_index] = GridPartitioningGetOwnerRank(mig->pnew, coord);
   // Insert coordinate -- 3d regardless of dimensionality.
   for (d = 0; d < 3; ++d)
     mig->index[3 * insert_index + d] = coord[d];
+  PetscFunctionReturn(0);
+}
 
+// Insert a "mig->dof" PetscReals starting "data"
+// These data are associated to the "insert_index"th grid cell.
+static PetscErrorCode
+DataMigrationInsertData(DataMigration *mig, PetscInt insert_index, PetscInt vno,
+                        PetscReal *data)
+{
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  ierr = PetscMemcpy(&mig->field[mig->dof * (mig->nvec * insert_index + vno)], data,
+                     mig->dof * sizeof(PetscReal)); CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -197,6 +204,7 @@ DataMigrationInsert(DataMigration *mig, PetscInt coord[3], PetscReal *data,
 // be set to 0.
 static PetscErrorCode
 DataMigrationExtract(DataMigration *mig, PetscInt extract_index,
+                     PetscInt vno,
                      PetscInt *i, PetscInt *j, PetscInt *k,
                      PetscReal **data)
 {
@@ -217,7 +225,7 @@ DataMigrationExtract(DataMigration *mig, PetscInt extract_index,
   if (k)
     *k = mig->index[3 * extract_index + 2];
 
-  *data = &mig->field[mig->dof * extract_index];
+  *data = &mig->field[mig->dof * (mig->nvec * extract_index + vno)];
 
   PetscFunctionReturn(0);
 }
@@ -249,6 +257,237 @@ static PetscErrorCode DataMigrationDoMigrate(DataMigration *mig)
   PetscFunctionReturn(0);
 }
 
+static PetscErrorCode
+DataMigrationInsertVecIndex3D(DataMigration *mig, DM da)
+{
+  PetscErrorCode ierr;
+  PetscInt i, j, k, xs, ys, zs, xm, ym, zm, num;
+
+  PetscFunctionBegin;
+  ierr = DMDAGetCorners(da, &xs, &ys, &zs, &xm, &ym, &zm); CHKERRQ(ierr);
+
+  num = 0;
+  for (k = zs; k < zs+zm; k++) {
+    for (j = ys; j < ys+ym; j++) {
+      for (i = xs; i < xs+xm; i++) {
+          ierr = DataMigrationInsertIndex(mig, (PetscInt[]) {i, j, k},
+                                          num++); CHKERRQ(ierr);
+      }
+    }
+  }
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode
+DataMigrationInsertVecData3D(DataMigration *mig, DM da, PetscInt vno, Vec X)
+{
+  PetscErrorCode ierr;
+  PetscInt i, j, k, xs, ys, zs, xm, ym, zm, num;
+  PetscReal ****x;
+
+  PetscFunctionBegin;
+  ierr = DMDAGetCorners(da, &xs, &ys, &zs, &xm, &ym, &zm); CHKERRQ(ierr);
+
+  // Feed all local data into DataMigration
+  ierr = DMDAVecGetArrayDOF(da, X, &x); CHKERRQ(ierr);
+  num = 0;
+  for (k = zs; k < zs+zm; k++) {
+    for (j = ys; j < ys+ym; j++) {
+      for (i = xs; i < xs+xm; i++) {
+        ierr = DataMigrationInsertData(mig, num++, vno, x[k][j][i]);
+          CHKERRQ(ierr);
+      }
+    }
+  }
+  ierr = DMDAVecRestoreArrayDOF(da, X, &x); CHKERRQ(ierr);
+  
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode
+DataMigrationInsertVecIndex2D(DataMigration *mig, DM da)
+{
+  PetscErrorCode ierr;
+  PetscInt i, j, xs, ys, xm, ym, num;
+
+  PetscFunctionBegin;
+  ierr = DMDAGetCorners(da, &xs, &ys, NULL, &xm, &ym, NULL); CHKERRQ(ierr);
+
+  num = 0;
+  for (j = ys; j < ys+ym; j++) {
+    for (i = xs; i < xs+xm; i++) {
+      ierr = DataMigrationInsertIndex(mig, (PetscInt[]) {i, j, 0}, num++);
+        CHKERRQ(ierr);
+    }
+  }
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode
+DataMigrationInsertVecData2D(DataMigration *mig, DM da, PetscInt vno, Vec X)
+{
+  PetscErrorCode ierr;
+  PetscInt i, j, xs, ys, xm, ym, num;
+  PetscReal ***x;
+
+  PetscFunctionBegin;
+  ierr = DMDAGetCorners(da, &xs, &ys, NULL, &xm, &ym, NULL); CHKERRQ(ierr);
+
+  // Feed all local data into DataMigration
+  ierr = DMDAVecGetArrayDOF(da, X, &x); CHKERRQ(ierr);
+  num = 0;
+  for (j = ys; j < ys+ym; j++) {
+    for (i = xs; i < xs+xm; i++) {
+      ierr = DataMigrationInsertData(mig, num++, vno, x[j][i]);
+        CHKERRQ(ierr);
+    }
+  }
+  ierr = DMDAVecRestoreArrayDOF(da, X, &x); CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode
+DataMigrationInsertVecIndex1D(DataMigration *mig, DM da)
+{
+  PetscErrorCode ierr;
+  PetscInt i, xs, xm, num;
+
+  PetscFunctionBegin;
+  ierr = DMDAGetCorners(da, &xs, NULL, NULL, &xm, NULL, NULL); CHKERRQ(ierr);
+  num = 0;
+  for (i = xs; i < xs+xm; i++) {
+    ierr = DataMigrationInsertIndex(mig, (PetscInt[]) {i, 0, 0}, num++);
+      CHKERRQ(ierr);
+  }
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode
+DataMigrationInsertVecData1D(DataMigration *mig, DM da, PetscInt vno, Vec X)
+{
+  PetscErrorCode ierr;
+  PetscInt i, xs, xm, num;
+  PetscReal **x;
+
+  PetscFunctionBegin;
+  ierr = DMDAGetCorners(da, &xs, NULL, NULL, &xm, NULL, NULL); CHKERRQ(ierr);
+
+  // Feed all local data into DataMigration
+  ierr = DMDAVecGetArrayDOF(da, X, &x); CHKERRQ(ierr);
+  num = 0;
+  for (i = xs; i < xs+xm; i++) {
+    ierr = DataMigrationInsertData(mig, num++, vno, x[i]);
+      CHKERRQ(ierr);
+  }
+  ierr = DMDAVecRestoreArrayDOF(da, X, &x); CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode
+DataMigrationInsertVecIndex(DataMigration *mig, DM da)
+{
+  static PetscErrorCode (*insert_fn[])(DataMigration *, DM) = {
+    [1] = DataMigrationInsertVecIndex1D,
+    [2] = DataMigrationInsertVecIndex2D,
+    [3] = DataMigrationInsertVecIndex3D,
+  };
+
+  return insert_fn[mig->pnew->dim](mig, da);
+}
+
+static PetscErrorCode
+DataMigrationInsertVecData(DataMigration *mig, DM da, PetscInt vno, Vec X)
+{
+  static PetscErrorCode (*insert_fn[])(DataMigration *, DM, PetscInt, Vec) = {
+    [1] = DataMigrationInsertVecData1D,
+    [2] = DataMigrationInsertVecData2D,
+    [3] = DataMigrationInsertVecData3D,
+  };
+
+  return insert_fn[mig->pnew->dim](mig, da, vno, X);
+}
+
+static PetscErrorCode
+DataMigrationExtractVec3D(DataMigration *mig, DM rda, PetscInt vno, Vec Xn)
+{
+  PetscErrorCode ierr;
+  PetscInt i, j, k, ei, size;
+  PetscReal ****x;
+  PetscReal *data;
+
+  PetscFunctionBegin;
+  ierr = DMDAVecGetArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
+  size = DataMigrationGetSize(mig);
+
+  for (ei = 0; ei < size; ++ei) {
+    ierr = DataMigrationExtract(mig, ei, vno, &i, &j, &k, &data);
+      CHKERRQ(ierr);
+    ierr = PetscMemcpy(x[k][j][i], data, mig->dof * sizeof(PetscReal));
+      CHKERRQ(ierr);
+  }
+  ierr = DMDAVecRestoreArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
+
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode
+DataMigrationExtractVec2D(DataMigration *mig, DM rda, PetscInt vno, Vec Xn)
+{
+  PetscErrorCode ierr;
+  PetscInt i, j, ei, size;
+  PetscReal ***x;
+  PetscReal *data;
+
+  PetscFunctionBegin;
+  ierr = DMDAVecGetArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
+  size = DataMigrationGetSize(mig);
+
+  for (ei = 0; ei < size; ++ei) {
+    ierr = DataMigrationExtract(mig, ei, vno, &i, &j, NULL, &data);
+      CHKERRQ(ierr);
+    ierr = PetscMemcpy(x[j][i], data, mig->dof * sizeof(PetscReal));
+      CHKERRQ(ierr);
+  }
+  ierr = DMDAVecRestoreArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
+
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode
+DataMigrationExtractVec1D(DataMigration *mig, DM rda, PetscInt vno, Vec Xn)
+{
+  PetscErrorCode ierr;
+  PetscInt i, ei, size;
+  PetscReal **x;
+  PetscReal *data;
+
+  PetscFunctionBegin;
+  ierr = DMDAVecGetArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
+  size = DataMigrationGetSize(mig);
+
+  for (ei = 0; ei < size; ++ei) {
+    ierr = DataMigrationExtract(mig, ei, vno, &i, NULL, NULL, &data);
+      CHKERRQ(ierr);
+    ierr = PetscMemcpy(x[i], data, mig->dof * sizeof(PetscReal));
+      CHKERRQ(ierr);
+  }
+  ierr = DMDAVecRestoreArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
+
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode
+DataMigrationExtractVec(DataMigration *mig, DM rda, PetscInt vno, Vec Xn)
+{
+  static PetscErrorCode (*extract_fn[])(DataMigration *, DM, PetscInt, Vec) = {
+    [1] = DataMigrationExtractVec1D,
+    [2] = DataMigrationExtractVec2D,
+    [3] = DataMigrationExtractVec3D,
+  };
+
+  return extract_fn[mig->pnew->dim](mig, rda, vno, Xn);
+}
+
 
 /***********/
 /* Utility */
@@ -275,165 +514,6 @@ static PetscErrorCode CopyDMInfo(DM dst, DM src)
   ierr = DMSetApplicationContext(dst, ctx); CHKERRQ(ierr);
 
   PetscFunctionReturn(0);
-}
-
-static PetscErrorCode
-DataMigrationInsertAll3D(DataMigration *mig, DM da, Vec X)
-{
-  PetscErrorCode ierr;
-  PetscInt i, j, k, xs, ys, zs, xm, ym, zm, num;
-  PetscReal ****x;
-
-  PetscFunctionBegin;
-  ierr = DMDAGetCorners(da, &xs, &ys, &zs, &xm, &ym, &zm); CHKERRQ(ierr);
-
-  // Feed all local data into DataMigration
-  ierr = DMDAVecGetArrayDOF(da, X, &x); CHKERRQ(ierr);
-  num = 0;
-  for (k = zs; k < zs+zm; k++) {
-    for (j = ys; j < ys+ym; j++) {
-      for (i = xs; i < xs+xm; i++) {
-        ierr = DataMigrationInsert(mig, (PetscInt[]) {i, j, k}, x[k][j][i],
-                                   num++); CHKERRQ(ierr);
-      }
-    }
-  }
-  ierr = DMDAVecRestoreArrayDOF(da, X, &x); CHKERRQ(ierr);
-  PetscFunctionReturn(0);
-}
-
-static PetscErrorCode
-DataMigrationInsertAll2D(DataMigration *mig, DM da, Vec X)
-{
-  PetscErrorCode ierr;
-  PetscInt i, j, xs, ys, xm, ym, num;
-  PetscReal ***x;
-
-  PetscFunctionBegin;
-  ierr = DMDAGetCorners(da, &xs, &ys, NULL, &xm, &ym, NULL); CHKERRQ(ierr);
-
-  // Feed all local data into DataMigration
-  ierr = DMDAVecGetArrayDOF(da, X, &x); CHKERRQ(ierr);
-  num = 0;
-  for (j = ys; j < ys+ym; j++) {
-    for (i = xs; i < xs+xm; i++) {
-      ierr = DataMigrationInsert(mig, (PetscInt[]) {i, j, 0}, x[j][i], num++);
-        CHKERRQ(ierr);
-    }
-  }
-  ierr = DMDAVecRestoreArrayDOF(da, X, &x); CHKERRQ(ierr);
-  PetscFunctionReturn(0);
-}
-
-static PetscErrorCode
-DataMigrationInsertAll1D(DataMigration *mig, DM da, Vec X)
-{
-  PetscErrorCode ierr;
-  PetscInt i, xs, xm, num;
-  PetscReal **x;
-
-  PetscFunctionBegin;
-  ierr = DMDAGetCorners(da, &xs, NULL, NULL, &xm, NULL, NULL); CHKERRQ(ierr);
-
-  // Feed all local data into DataMigration
-  ierr = DMDAVecGetArrayDOF(da, X, &x); CHKERRQ(ierr);
-  num = 0;
-  for (i = xs; i < xs+xm; i++) {
-    ierr = DataMigrationInsert(mig, (PetscInt[]) {i, 0, 0}, x[i], num++);
-      CHKERRQ(ierr);
-  }
-  ierr = DMDAVecRestoreArrayDOF(da, X, &x); CHKERRQ(ierr);
-  PetscFunctionReturn(0);
-}
-
-static PetscErrorCode
-DataMigrationInsertAll(DataMigration *mig, DM da, Vec X)
-{
-  static PetscErrorCode (*insert_fn[])(DataMigration *, DM, Vec) = {
-    [1] = DataMigrationInsertAll1D,
-    [2] = DataMigrationInsertAll2D,
-    [3] = DataMigrationInsertAll3D,
-  };
-
-  return insert_fn[mig->pnew->dim](mig, da, X);
-}
-
-static PetscErrorCode
-DataMigrationExtractAll3D(DataMigration *mig, DM rda, Vec Xn, PetscInt dof)
-{
-  PetscErrorCode ierr;
-  PetscInt i, j, k, ei, size;
-  PetscReal ****x;
-  PetscReal *data;
-
-  PetscFunctionBegin;
-  ierr = DMDAVecGetArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
-  size = DataMigrationGetSize(mig);
-
-  for (ei = 0; ei < size; ++ei) {
-    ierr = DataMigrationExtract(mig, ei, &i, &j, &k, &data);
-      CHKERRQ(ierr);
-    ierr = PetscMemcpy(x[k][j][i], data, dof * sizeof(PetscReal));
-  }
-  ierr = DMDAVecRestoreArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
-
-  PetscFunctionReturn(0);
-}
-
-static PetscErrorCode
-DataMigrationExtractAll2D(DataMigration *mig, DM rda, Vec Xn, PetscInt dof)
-{
-  PetscErrorCode ierr;
-  PetscInt i, j, ei, size;
-  PetscReal ***x;
-  PetscReal *data;
-
-  PetscFunctionBegin;
-  ierr = DMDAVecGetArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
-  size = DataMigrationGetSize(mig);
-
-  for (ei = 0; ei < size; ++ei) {
-    ierr = DataMigrationExtract(mig, ei, &i, &j, NULL, &data);
-      CHKERRQ(ierr);
-    ierr = PetscMemcpy(x[j][i], data, dof * sizeof(PetscReal));
-  }
-  ierr = DMDAVecRestoreArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
-
-  PetscFunctionReturn(0);
-}
-
-static PetscErrorCode
-DataMigrationExtractAll1D(DataMigration *mig, DM rda, Vec Xn, PetscInt dof)
-{
-  PetscErrorCode ierr;
-  PetscInt i, ei, size;
-  PetscReal **x;
-  PetscReal *data;
-
-  PetscFunctionBegin;
-  ierr = DMDAVecGetArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
-  size = DataMigrationGetSize(mig);
-
-  for (ei = 0; ei < size; ++ei) {
-    ierr = DataMigrationExtract(mig, ei, &i, NULL, NULL, &data);
-      CHKERRQ(ierr);
-    ierr = PetscMemcpy(x[i], data, dof * sizeof(PetscReal));
-  }
-  ierr = DMDAVecRestoreArrayDOF(rda, Xn, &x); CHKERRQ(ierr);
-
-  PetscFunctionReturn(0);
-}
-
-static PetscErrorCode
-DataMigrationExtractAll(DataMigration *mig, DM rda, Vec Xn, PetscInt dof)
-{
-  static PetscErrorCode (*extract_fn[])(DataMigration *, DM, Vec, PetscInt) = {
-    [1] = DataMigrationExtractAll1D,
-    [2] = DataMigrationExtractAll2D,
-    [3] = DataMigrationExtractAll3D,
-  };
-
-  return extract_fn[mig->pnew->dim](mig, rda, Xn, dof);
 }
 
 static PetscErrorCode
@@ -466,44 +546,55 @@ get_local_data_size(DM da, PetscInt *size)
 /* Public interface */
 /********************/
 
-// Migrates all data from Vec X to Xn.
-// Where X is a global vector from da and Xn from rda.
+// Migrates all data from every Vec in X to the corresponding in Xn.
+// Both their lengths is nvec.
+// Where X is an array of global vectors from da and Xn from rda.
 static PetscErrorCode
-DMDA_repart_migrate_data(DM da, DM rda, MPI_Comm comm, Vec X, Vec Xn,
-                         GridPartitioning *pnew)
+DMDA_repart_migrate_data(DM da, DM rda, MPI_Comm comm, PetscInt nvec,
+                         Vec *X[], Vec Xn[], GridPartitioning *pnew)
 {
   PetscErrorCode ierr;
   DataMigration mig;
-  PetscInt dof, lsize;
+  PetscInt dof, lsize, vno;
 
   PetscFunctionBegin;
   ierr = DMDAGetInfo(da, NULL, NULL, NULL, NULL, NULL, NULL, NULL, &dof,
                      NULL, NULL, NULL, NULL, NULL); CHKERRQ(ierr);
   ierr = get_local_data_size(da, &lsize);
-  ierr = DataMigrationCreate(&mig, comm, lsize, pnew, dof); CHKERRQ(ierr);
-  ierr = DataMigrationInsertAll(&mig, da, X); CHKERRQ(ierr);
+  ierr = DataMigrationCreate(&mig, comm, lsize, pnew, dof, nvec);
+    CHKERRQ(ierr);
+  ierr = DataMigrationInsertVecIndex(&mig, da); CHKERRQ(ierr);
+  for (vno = 0; vno < nvec; ++vno) {
+    ierr = DataMigrationInsertVecData(&mig, da, vno, *X[vno]); CHKERRQ(ierr);
+  }
 
   // Migrate the data to their respective new owners
   ierr = DataMigrationDoMigrate(&mig); CHKERRQ(ierr);
 
   // Extract data and fill "Xn"
-  ierr = DataMigrationExtractAll(&mig, rda, Xn, dof);
+  for (vno = 0; vno < nvec; ++vno) {
+    ierr = DataMigrationExtractVec(&mig, rda, vno, Xn[vno]); CHKERRQ(ierr);
+  }
 
   ierr = DataMigrationDestroy(&mig); CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
-PetscErrorCode
-DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[],
-            PetscBool setFromOptions)
+// Actually, Vec X[] would be sufficient to be able to modify the component
+// Vecs of the array. However, the interface of DMDA_repartl cannot satisfy
+// this as it has multiple pointers each to one Vec only. Therefore the
+// additional indirection.
+static PetscErrorCode
+DMDA_repartn(DM* da, PetscInt lx[], PetscInt ly[], PetscInt lz[],
+             PetscBool setFromOptions, PetscInt nvec, Vec *X[])
 {
   PetscErrorCode ierr;
-  PetscInt dim, M, N, P, m, n, p, dof, s;
+  PetscInt dim, M, N, P, m, n, p, dof, s, vno;
   DMDAStencilType st;
   DMBoundaryType bx, by, bz;
   DM rda;
   GridPartitioning pnew;
-  Vec Xn;
+  Vec Xn[nvec];
   MPI_Comm comm;
 
   PetscFunctionBegin;
@@ -539,17 +630,77 @@ DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[],
   ierr = CopyDMInfo(rda, *da); CHKERRQ(ierr);
 
   // Migrate data
-  ierr = DMCreateGlobalVector(rda, &Xn); CHKERRQ(ierr);
-  ierr = DMDA_repart_migrate_data(*da, rda, comm, *X, Xn, &pnew); CHKERRQ(ierr);
+  for (vno = 0; vno < nvec; vno++) {
+    ierr = DMCreateGlobalVector(rda, &Xn[vno]); CHKERRQ(ierr);
+  }
+  ierr = DMDA_repart_migrate_data(*da, rda, comm, nvec, X, Xn, &pnew); CHKERRQ(ierr);
 
   // Reset "da" and "X"
   ierr = DMDestroy(da); CHKERRQ(ierr);
-  ierr = VecDestroy(X); CHKERRQ(ierr);
+  for (vno = 0; vno < nvec; vno++) {
+    ierr = VecDestroy(X[vno]); CHKERRQ(ierr);
+    *X[vno] = Xn[vno];
+  }
   *da = rda;
-  *X = Xn;
 
   ierr = GridPartitioningDestroy(&pnew); CHKERRQ(ierr);
 
   PetscFunctionReturn(0);
+}
+
+PetscErrorCode
+DMDA_repartv(DM* da, PetscInt lx[], PetscInt ly[], PetscInt lz[],
+             PetscBool setFromOptions, PetscInt nvec, Vec X[])
+{
+  PetscErrorCode ierr;
+  Vec *XX[nvec];
+  PetscInt i;
+
+  PetscFunctionBegin;
+  // Copy the data into array of pointers to vec
+  for (i = 0; i < nvec; ++i)
+    XX[i] = &X[i];
+
+  ierr = DMDA_repartn(da, lx, ly, lz, setFromOptions, nvec, XX);
+    CHKERRQ(ierr);
+
+  PetscFunctionReturn(0);
+}
+
+PetscErrorCode
+DMDA_repartl(DM* da,
+             PetscInt lx[], PetscInt ly[], PetscInt lz[],
+             PetscBool setFromOptions, Vec *X, ...)
+{
+  PetscErrorCode ierr;
+  va_list ap1, ap2;
+  size_t nelem, i;
+  Vec **arr;
+
+  PetscFunctionBegin;
+  // Copy the elements of the va_list into an array
+  va_start(ap1, X);
+  va_copy(ap2, ap1);
+  for (nelem = 1; va_arg(ap1, Vec*); nelem++);
+  va_end(ap1);
+
+  ierr = PetscMalloc1(nelem, &arr); CHKERRQ(ierr);
+  arr[0] = X;
+  for (i = 1; i < nelem; ++i)
+    arr[i] = va_arg(ap2, Vec*);
+  va_end(ap2);
+
+  ierr = DMDA_repartn(da, lx, ly, lz, setFromOptions, nelem, arr); CHKERRQ(ierr);
+  ierr = PetscFree(arr); CHKERRQ(ierr);
+
+  PetscFunctionReturn(0);
+}
+
+PetscErrorCode
+DMDA_repart(DM* da, Vec *X,
+            PetscInt lx[], PetscInt ly[], PetscInt lz[],
+            PetscBool setFromOptions)
+{
+  return DMDA_repartn(da, lx, ly, lz, setFromOptions, 1, &X);
 }
 

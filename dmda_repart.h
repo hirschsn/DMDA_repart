@@ -32,6 +32,34 @@ DMDA_repart(DM* da, Vec *X, PetscInt lx[], PetscInt ly[], PetscInt lz[],
             PetscBool setFromOptions);
 
 
+/****************************************************************************/
+/* The following functions are for repartitioning more than one associated  */
+/* global Vec. They all perform the same task but their interface is        */
+/* different. Use whatever fits the data layout in your program most.       */
+/****************************************************************************/
+
+/** Repartitions a Petsc DMDA and "nvec" associated global Vec provided as
+ * array "X" of Vec.
+ * Use this if you organize your vectors in an array. Do not use it in
+ * conjunction with a compound literal. Use DMDA_repart(l|n) instead.
+ *
+ * @see DMDA_repart
+ */
+PetscErrorCode
+DMDA_repartv(DM* da, PetscInt lx[], PetscInt ly[], PetscInt lz[],
+              PetscBool setFromOptions, PetscInt nvec, Vec X[]);
+
+/** Repartitions a Petsc DMDA and associated global Vecs provided as va_args.
+ * The last parameter in a call to this function *must* be "(Vec*) NULL".
+ * I.e. "DMDA_repartl(da, lx, ly, lz, PETSC_FALSE, &X, (Vec*) NULL);"
+ * is equivalent to "DMDA_repart(da, &X, lx, ly, lz, PETSC_FALSE);"
+ *
+ * @see DMDA_repart
+ */
+PetscErrorCode
+DMDA_repartl(DM* da, PetscInt lx[], PetscInt ly[], PetscInt lz[],
+              PetscBool setFromOptions, Vec *X, ...);
+
 /** Determine new ownership ranges for repartitioning.
  *
  * Supply NULL as "lz" if operating on a 2D DMDA and also additionally
