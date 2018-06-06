@@ -109,7 +109,7 @@ PStateLocalSum3D(PState *ps, Vec W)
 }
 
 static PetscErrorCode
-PStateLocalSum2D(PState *ps, Vec W, PetscInt w_field)
+PStateLocalSum2D(PState *ps, Vec W)
 {
   PetscErrorCode ierr;
   PetscInt i, j, xs, ys, xm, ym, d;
@@ -132,7 +132,7 @@ PStateLocalSum2D(PState *ps, Vec W, PetscInt w_field)
 }
 
 static PetscErrorCode
-PStateLocalSum1D(PState *ps, Vec W, PetscInt w_field)
+PStateLocalSum1D(PState *ps, Vec W)
 {
   PetscErrorCode ierr;
   PetscInt i, xs, xm, d;
