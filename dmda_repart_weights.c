@@ -347,7 +347,7 @@ DMDA_repart_ownership_ranges(DM da, Vec W,
                              PetscInt lx[], PetscInt ly[], PetscInt lz[])
 {
   PetscErrorCode ierr;
-  PetscReal el;
+  PetscReal el, sum;
   PState ps;
   MPI_Comm comm;
 
@@ -357,6 +357,15 @@ DMDA_repart_ownership_ranges(DM da, Vec W,
     PetscObjectGetComm((PetscObject) da, &comm);
     SETERRQ(comm, PETSC_ERR_ARG_WRONG,
             "DMDA_repart_ownership_ranges: Weights must be positive!");
+  }
+
+  ierr = VecSum(W, &sum); CHKERRQ(ierr);
+  if (sum == 0.0 || !isnormal(sum) || !isnormal(1.0 / sum)) {
+    PetscObjectGetComm((PetscObject) da, &comm);
+    PetscPrintf(comm, "[DMDA_repart_ownership_ranges] WARNING:"
+                      " Sum of weight vector is zero or not a normal floating-point value."
+                      " Returning unmodified ownership ranges.");
+    PetscFunctionReturn(0);
   }
 
   ierr = PStateCreate(&ps, da); CHKERRQ(ierr);
