@@ -343,6 +343,29 @@ PStateCheckIntegrity(PState *ps, PetscInt *ls[])
 }
 
 PetscErrorCode
+SetORangesFromDMDA(DM da, PetscInt lx[], PetscInt ly[], PetscInt lz[])
+{
+  PetscErrorCode ierr;
+  const PetscInt *slx, *sly, *slz;
+  PetscInt dim, m, n, p;
+
+  PetscFunctionBegin;
+  ierr = DMDAGetInfo(da, &dim, NULL, NULL, NULL, &m, &n, &p, NULL , NULL,
+                     NULL, NULL, NULL, NULL); CHKERRQ(ierr);
+
+  ierr = DMDAGetOwnershipRanges(da, &slx, &sly, &slz); CHKERRQ(ierr);
+  ierr = PetscMemcpy(lx, slx, m * sizeof(PetscInt)); CHKERRQ(ierr);
+  if (dim >= 2) {
+    ierr = PetscMemcpy(ly, sly, n * sizeof(PetscInt)); CHKERRQ(ierr);
+  }
+  if (dim >= 3) {
+    ierr = PetscMemcpy(lz, slz, p * sizeof(PetscInt)); CHKERRQ(ierr);
+  }
+
+  PetscFunctionReturn(0);
+}
+
+PetscErrorCode
 DMDA_repart_ownership_ranges(DM da, Vec W,
                              PetscInt lx[], PetscInt ly[], PetscInt lz[])
 {
@@ -364,7 +387,8 @@ DMDA_repart_ownership_ranges(DM da, Vec W,
     PetscObjectGetComm((PetscObject) da, &comm);
     PetscPrintf(comm, "[DMDA_repart_ownership_ranges] WARNING:"
                       " Sum of weight vector is zero or not a normal floating-point value."
-                      " Returning unmodified ownership ranges.");
+                      " Returning current ownership ranges of the DMDA.");
+    ierr = SetORangesFromDMDA(da, lx, ly, lz); CHKERRQ(ierr);
     PetscFunctionReturn(0);
   }
 
