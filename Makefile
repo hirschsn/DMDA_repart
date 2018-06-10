@@ -20,7 +20,7 @@ libdmda_repart.a: $(LIBOBJ)
 	$(AR) rc $@ $?
 	$(RANLIB) $@
 
-$(EXBIN): %: %.o libdmda_repart.a
+$(EXBIN): %: %.o dmda_repart.h libdmda_repart.a
 	$(CLINKER) -o $@ $< $(PETSC_LIB) -L. -ldmda_repart
 
 ex1: examples/ex1
