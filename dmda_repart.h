@@ -72,9 +72,12 @@ DMDA_repartl(DM* da, PetscInt lx[], PetscInt ly[], PetscInt lz[],
  * @param lx Number of cells per process in x-direction (out)
  * @param ly Number of cells per process in y-direction (out), possibly NULL
  * @param lz Number of cells per process in z-direction (out), possibly NULL
+ * @param grid_min Minimum number of grid points for each partition in every direction
+ *                 (or 0 if you don't care)
  */
 PetscErrorCode
 DMDA_repart_ownership_ranges(DM da, Vec W,
-                             PetscInt lx[], PetscInt ly[], PetscInt lz[]);
+                             PetscInt lx[], PetscInt ly[], PetscInt lz[],
+                             PetscInt grid_min);
 
 #endif

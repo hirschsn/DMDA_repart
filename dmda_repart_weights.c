@@ -22,6 +22,8 @@ typedef struct {
   // N: Dimension of the process grid, i.e. "(m, n, p)" in Petsc speak.
   PetscInt n[3], N[3];
 
+  PetscInt grid_min; // Minimum number of grid points in any direction
+
   MPI_Datatype mpi_petsc_real, mpi_petsc_int;
 } PState;
 
@@ -45,7 +47,7 @@ PStateSetProcCoords(PState *ps, PetscMPIInt rank)
 
 // Initializes a PState struct.
 static PetscErrorCode
-PStateCreate(PState *ps, DM da)
+PStateCreate(PState *ps, DM da, PetscInt grid_min)
 {
   PetscErrorCode ierr;
   PetscInt myrank;
@@ -58,6 +60,7 @@ PStateCreate(PState *ps, DM da)
                       ps->xyzm[1], &ps->cs[1],
                       ps->xyzm[2], &ps->cs[2]); CHKERRQ(ierr);
   ps->da = da;
+  ps->grid_min = grid_min;
 
   ierr = PetscObjectGetComm((PetscObject) da, &ps->comm); CHKERRQ(ierr);
 
@@ -212,9 +215,10 @@ PStateGlobalSum(PState *ps)
 // direction of the field.
 // "Comm" is a communicator of a 1d subset of processes along a particular
 // dimension.
+// This function does not respect ps->grid_min!
 static PetscErrorCode
-create_1d_subdomains(PState *ps, PetscReal *cs, PetscInt *ld, PetscInt len,
-                     MPI_Comm comm, MPI_Request *req)
+create_1d_subdomains_par(PState *ps, PetscReal *cs, PetscInt *ld, PetscInt len,
+                         MPI_Comm comm, MPI_Request *req)
 {
   PetscInt i, csize, proc;
   PetscReal lsum = 0., prefix = 0., oldprefix, target, gsum;
@@ -265,6 +269,100 @@ create_1d_subdomains(PState *ps, PetscReal *cs, PetscInt *ld, PetscInt len,
   PetscFunctionReturn(0);
 }
 
+// Determines 1d ownership range "ld" from "cs".
+// "Cs" is of length "len" and "ld" of length ps->N[x] where x is the
+// direction of the field.
+// "Comm" is a communicator of a 1d subset of processes along a particular
+// dimension.
+static PetscErrorCode
+create_1d_subdomains_seq(PState *ps, PetscReal *cs, PetscInt *ld, PetscInt len,
+                         MPI_Comm comm, MPI_Request *req)
+{
+  struct {
+    PetscInt proc;   // Current partition
+    PetscInt ngridp; // Number of grid points currently assigned to "proc"
+    PetscInt gloi;   // Global index in global cs field
+    PetscReal w;     // Currently assigned weight to "proc"
+  } state = {0, 0, 0, 0.0};
+
+  PetscInt i, left_processes, left_ngridp, glolen;
+  PetscReal lsum = 0., gsum, target;
+  PetscMPIInt csize, rank;
+  MPI_Request r1, r2;
+
+  PetscFunctionBegin;
+
+  for (i = 0; i < len; ++i)
+    lsum += cs[i];
+  
+  // Determine target and prefix load
+  // Global sum is the same regardless of direction, so calculate it only once
+  MPI_Iallreduce(&lsum, &gsum, 1, ps->mpi_petsc_real, MPI_SUM, comm, &r1);
+  MPI_Iallreduce(&len, &glolen, 1, ps->mpi_petsc_int, MPI_SUM, comm, &r2);
+  MPI_Comm_size(comm, &csize);
+  MPI_Comm_rank(comm, &rank);
+
+  for (i = 0; i < csize; ++i)
+    ld[i] = 0;
+
+  MPI_Wait(&r1, MPI_STATUS_IGNORE);
+  target = gsum / csize;
+
+  if (!isnormal(target) || !isnormal(1.0 / target)) {
+    SETERRQ(comm, PETSC_ERR_SUP,
+            "Sum of weights is not a normal floating point value."
+            " All weights zero?");
+  }
+
+  MPI_Wait(&r2, MPI_STATUS_IGNORE);
+
+  // Sanity check of ps->grid_min parameter
+  if (csize * ps->grid_min > glolen) {
+    SETERRQ2(comm, PETSC_ERR_SUP,
+            "Not enough grid cells for grid min width of %i and %i"
+            " processes in some direction.", ps->grid_min, csize);
+  }
+
+  // Sequential loop over all processes
+  if (rank > 0)
+    MPI_Recv(&state, sizeof(state), MPI_BYTE, rank - 1, 0, comm, MPI_STATUS_IGNORE);
+
+  for (i = 0; i < len; ++i) {
+    left_ngridp = glolen - state.gloi;
+    left_processes = csize - state.proc - 1;
+
+    state.w += cs[i];
+    // Also assign to the next process if not enough grid cells would be left
+    // for the rest of the processes
+    if ((state.w > target && state.ngridp >= ps->grid_min)
+        || (left_ngridp <= left_processes * ps->grid_min)) {
+      state.proc++;
+      state.w = 0.0;
+      state.ngridp = 0;
+    }
+
+    if (state.proc >= csize)
+      state.proc = csize - 1;
+
+    ld[state.proc] += 1;
+    state.ngridp++;
+
+    state.gloi++;
+  }
+
+  if (rank < csize - 1)
+    MPI_Send(&state, sizeof(state), MPI_BYTE, rank + 1, 0, comm);
+  // Loop end
+
+  MPI_Iallreduce(MPI_IN_PLACE, ld, csize, ps->mpi_petsc_int, MPI_SUM, comm,
+                 req);
+
+  PetscFunctionReturn(0);
+}
+
+typedef PetscErrorCode (*MultiSectionFn1D)(PState *, PetscReal *,
+        PetscInt *, PetscInt, MPI_Comm, MPI_Request *);
+
 static PetscInt
 PStateReduceGetColor(PState *ps, PetscInt d)
 {
@@ -286,7 +384,7 @@ PStateReduceGetColor(PState *ps, PetscInt d)
 // Determines the ownership ranges "ls" = {lx, ly, lz}.
 // Note: PStateGlobalSum must have been called before.
 static PetscErrorCode
-PStateReduce(PState *ps, PetscInt *ls[3])
+PStateReduce(PState *ps, PetscInt *ls[3], MultiSectionFn1D create_1d_subdomains)
 {
   PetscErrorCode ierr;
   MPI_Comm c[3]; 
@@ -296,7 +394,9 @@ PStateReduce(PState *ps, PetscInt *ls[3])
   PetscFunctionBegin;
 
   for (d = 0; d < ps->dim; ++d) {
-    MPI_Comm_split(ps->comm, PStateReduceGetColor(ps, d), 0, &c[d]);
+    // The "key" value of "ps->n[d]" is necessary for the ordering of the
+    // Allgather* operations in create_1d_sudomains_seq.
+    MPI_Comm_split(ps->comm, PStateReduceGetColor(ps, d), ps->n[d], &c[d]);
     ierr = create_1d_subdomains(ps, ps->cs[d], ls[d], ps->xyzm[d], c[d],
                                 &req[d]); CHKERRQ(ierr);
   }
@@ -367,7 +467,8 @@ SetORangesFromDMDA(DM da, PetscInt lx[], PetscInt ly[], PetscInt lz[])
 
 PetscErrorCode
 DMDA_repart_ownership_ranges(DM da, Vec W,
-                             PetscInt lx[], PetscInt ly[], PetscInt lz[])
+                             PetscInt lx[], PetscInt ly[], PetscInt lz[],
+                             PetscInt grid_min)
 {
   PetscErrorCode ierr;
   PetscReal el, sum;
@@ -392,10 +493,17 @@ DMDA_repart_ownership_ranges(DM da, Vec W,
     PetscFunctionReturn(0);
   }
 
-  ierr = PStateCreate(&ps, da); CHKERRQ(ierr);
+  ierr = PStateCreate(&ps, da, grid_min); CHKERRQ(ierr);
   ierr = PStateLocalSum(&ps, W); CHKERRQ(ierr);
   ierr = PStateGlobalSum(&ps); CHKERRQ(ierr);
-  ierr = PStateReduce(&ps, (PetscInt *[]){lx, ly, lz}); CHKERRQ(ierr);
+  // The "_par" version works in parallel but cannot respect "grid_min".
+  if (grid_min > 0) {
+    ierr = PStateReduce(&ps, (PetscInt *[]){lx, ly, lz},
+                        create_1d_subdomains_seq); CHKERRQ(ierr);
+  } else {
+    ierr = PStateReduce(&ps, (PetscInt *[]){lx, ly, lz},
+                        create_1d_subdomains_par); CHKERRQ(ierr);
+  }
   ierr = PStateCheckIntegrity(&ps, (PetscInt *[]){lx, ly, lz}); CHKERRQ(ierr);
 
   PStateDestroy(&ps);
