@@ -89,7 +89,7 @@ int main(int argc, char **argv)
   DM da;
   PetscErrorCode ierr;
   Vec X;
-  PetscInt dim = 3;
+  PetscInt dim = 3, grid_min = 0;
   int size, dims[3] = {0};
 
   ierr = PetscInitialize(&argc, &argv, NULL, NULL); CHKERRQ(ierr);
@@ -97,6 +97,7 @@ int main(int argc, char **argv)
   ierr = PetscOptionsBegin(PETSC_COMM_WORLD, PETSC_NULL, "Repart test", "");
     CHKERRQ(ierr);
   ierr = PetscOptionsGetInt(NULL, NULL, "-d", &dim, NULL); CHKERRQ(ierr);
+  ierr = PetscOptionsGetInt(NULL, NULL, "-grid_min", &grid_min, NULL); CHKERRQ(ierr);
   ierr = PetscOptionsEnd();CHKERRQ(ierr);
 
   ierr = PetscPrintf(PETSC_COMM_WORLD, "%iD test\n", dim); CHKERRQ(ierr);
@@ -158,7 +159,7 @@ int main(int argc, char **argv)
 
   PetscInt *lx, *ly, *lz;
   ierr = PetscMalloc3(dims[0], &lx, dims[1], &ly, dims[2], &lz); CHKERRQ(ierr);
-  ierr = DMDA_repart_ownership_ranges(da, X, lx, ly, lz); CHKERRQ(ierr);
+  ierr = DMDA_repart_ownership_ranges(da, X, lx, ly, lz, grid_min); CHKERRQ(ierr);
 
   PetscMPIInt myrank;
   MPI_Comm_rank(PETSC_COMM_WORLD, &myrank);
