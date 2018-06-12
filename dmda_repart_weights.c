@@ -488,7 +488,7 @@ DMDA_repart_ownership_ranges(DM da, Vec W,
     PetscObjectGetComm((PetscObject) da, &comm);
     PetscPrintf(comm, "[DMDA_repart_ownership_ranges] WARNING:"
                       " Sum of weight vector is zero or not a normal floating-point value."
-                      " Returning current ownership ranges of the DMDA.");
+                      " Returning current ownership ranges of the DMDA.\n");
     ierr = SetORangesFromDMDA(da, lx, ly, lz); CHKERRQ(ierr);
     PetscFunctionReturn(0);
   }
