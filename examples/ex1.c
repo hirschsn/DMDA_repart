@@ -281,5 +281,6 @@ int main(int argc, char **argv)
   }
 
   ierr = VecDestroy(&X);CHKERRQ(ierr);
+  ierr = VecDestroy(&Y);CHKERRQ(ierr);
   ierr = DMDestroy(&da);CHKERRQ(ierr);
 }
