@@ -40,5 +40,5 @@ run3: ex3
 	mpiexec.${MPI} -n ${NP} ./examples/ex3
 
 
-.PHONY: run1 run2
+.PHONY: run1 run2 run3
 
