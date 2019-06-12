@@ -1,7 +1,7 @@
 
 # DMDA repart
 
-Small library to repartition a [PetSc](https://www.mcs.anl.gov/petsc/index.html) DMDA as well ass associated vectors.
+Small library to repartition a [PetSc](https://www.mcs.anl.gov/petsc/index.html) DMDA as well as associated vectors.
 
 ## Usage
 
